@@ -60,7 +60,7 @@ func startBot(api *tgbotapi.BotAPI, handler *handlers.TelegramHandler) {
 	log.Printf("🆔 ID бота: %d", api.Self.ID)
 
 	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	u.Timeout = cfg.TelegramTimeout // Используем настройку из конфига
 
 	// Получаем канал обновлений
 	updates := api.GetUpdatesChan(u)

@@ -10,6 +10,7 @@ type Config struct {
 	TelegramToken string
 	HTTPTimeout   int
 	DownloadDir   string
+	TelegramTimeout int // Таймаут для Telegram API
 }
 
 // Load загружает конфигурацию из файла и переменных окружения
@@ -21,8 +22,9 @@ func Load(filename string) (*Config, error) {
 
 	config := &Config{
 		TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
-		HTTPTimeout:   30, // секунды
+		HTTPTimeout:   60, // увеличиваем до 60 секунд
 		DownloadDir:   "./downloads",
+		TelegramTimeout: 120, // Таймаут для Telegram API (2 минуты)
 	}
 
 	return config, nil
