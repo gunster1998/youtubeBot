@@ -3,9 +3,11 @@ package main
 import (
 	"fmt"
 	"log"
+	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"youtubeBot/config"
@@ -27,15 +29,22 @@ func main() {
 
 	fmt.Printf("🚀 Запуск бота с локальным сервером Telegram API: %s\n", cfg.TelegramAPI)
 
-	// Создаем бота с локальным API
-	bot, err := tgbotapi.NewBotAPIWithClient(
-		cfg.TelegramToken,
-		cfg.TelegramAPI,
-		nil, // используем дефолтный HTTP клиент
-	)
+	// Устанавливаем переменную окружения для базового URL Telegram API
+	os.Setenv("TELEGRAM_API_BASE_URL", cfg.TelegramAPI)
+
+	// Создаем кастомный HTTP клиент для локального сервера
+	client := &http.Client{
+		Timeout: time.Duration(cfg.HTTPTimeout) * time.Second,
+	}
+
+	// Создаем бота с обычным API, но с кастомным клиентом
+	bot, err := tgbotapi.NewBotAPI(cfg.TelegramToken)
 	if err != nil {
 		log.Fatalf("❌ Ошибка создания бота: %v", err)
 	}
+
+	// Устанавливаем кастомный HTTP клиент
+	bot.Client = client
 
 	// Проверяем подключение к локальному серверу
 	botInfo, err := bot.GetMe()
