@@ -8,8 +8,10 @@ import (
 // Config содержит конфигурацию бота
 type Config struct {
 	TelegramToken string
+	TelegramAPI   string // URL локального сервера Telegram API
 	HTTPTimeout   int
 	DownloadDir   string
+	MaxFileSize   int64 // Максимальный размер файла в байтах (0 = без ограничений)
 }
 
 // Load загружает конфигурацию из файла и переменных окружения
@@ -21,11 +23,21 @@ func Load(filename string) (*Config, error) {
 
 	config := &Config{
 		TelegramToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
-		HTTPTimeout:   30, // секунды
+		TelegramAPI:   getEnvOrDefault("TELEGRAM_API_URL", "http://127.0.0.1:8081"),
+		HTTPTimeout:   60, // увеличиваем таймаут для больших файлов
 		DownloadDir:   "./downloads",
+		MaxFileSize:   0, // 0 = без ограничений
 	}
 
 	return config, nil
+}
+
+// getEnvOrDefault возвращает значение переменной окружения или значение по умолчанию
+func getEnvOrDefault(key, defaultValue string) string {
+	if value := os.Getenv(key); value != "" {
+		return value
+	}
+	return defaultValue
 }
 
 // loadEnvFile загружает переменные окружения из файла

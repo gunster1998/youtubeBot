@@ -1,9 +1,11 @@
 package main
 
 import (
+	"fmt"
 	"log"
-	"net/http"
-	"time"
+	"os"
+	"os/signal"
+	"syscall"
 
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 	"youtubeBot/config"
@@ -15,69 +17,76 @@ func main() {
 	// Загружаем конфигурацию
 	cfg, err := config.Load("config.env")
 	if err != nil {
-		log.Printf("Предупреждение: не удалось загрузить config.env: %v", err)
+		log.Fatalf("❌ Ошибка загрузки конфигурации: %v", err)
 	}
 
-	// Проверяем наличие yt-dlp
+	// Проверяем токен
+	if cfg.TelegramToken == "" {
+		log.Fatal("❌ TELEGRAM_BOT_TOKEN не установлен в config.env")
+	}
+
+	fmt.Printf("🚀 Запуск бота с локальным сервером Telegram API: %s\n", cfg.TelegramAPI)
+
+	// Создаем бота с локальным API
+	bot, err := tgbotapi.NewBotAPIWithClient(
+		cfg.TelegramToken,
+		cfg.TelegramAPI,
+		nil, // используем дефолтный HTTP клиент
+	)
+	if err != nil {
+		log.Fatalf("❌ Ошибка создания бота: %v", err)
+	}
+
+	// Проверяем подключение к локальному серверу
+	botInfo, err := bot.GetMe()
+	if err != nil {
+		log.Fatalf("❌ Не удалось подключиться к локальному серверу Telegram API: %v", err)
+	}
+
+	fmt.Printf("✅ Бот успешно подключен: @%s (%s)\n", botInfo.UserName, botInfo.FirstName)
+	fmt.Printf("🌐 Используется локальный сервер: %s\n", cfg.TelegramAPI)
+
+	// Проверяем yt-dlp
 	youtubeService := services.NewYouTubeService(cfg.DownloadDir)
 	if err := youtubeService.CheckYtDlp(); err != nil {
-		log.Fatal(err)
+		log.Fatalf("❌ %v", err)
 	}
-
-	// Получаем токен бота из переменной окружения
-	token := cfg.TelegramToken
-	if token == "" {
-		log.Fatal("TELEGRAM_BOT_TOKEN не установлен")
-	}
-
-	log.Printf("Запуск бота с токеном: %s...", token[:10]+"...")
-
-	// Создаем HTTP клиент
-	client := &http.Client{
-		Timeout: time.Duration(cfg.HTTPTimeout) * time.Second,
-	}
-
-	// Создаем бота
-	api, err := tgbotapi.NewBotAPI(token)
-	if err != nil {
-		log.Fatal(err)
-	}
-
-	// Устанавливаем кастомный HTTP клиент
-	api.Client = client
+	fmt.Println("✅ yt-dlp доступен")
 
 	// Создаем обработчик
-	handler := handlers.NewTelegramHandler(api, youtubeService)
+	handler := handlers.NewTelegramHandler(bot, youtubeService)
 
-	// Запускаем бота
-	startBot(api, handler)
-}
+	// Настраиваем обновления
+	updateConfig := tgbotapi.NewUpdate(0)
+	updateConfig.Timeout = 60
 
-// startBot запускает бота
-func startBot(api *tgbotapi.BotAPI, handler *handlers.TelegramHandler) {
-	log.Printf("🚀 Бот запущен: %s", api.Self.UserName)
-	log.Printf("📝 Имя бота: %s", api.Self.FirstName)
-	log.Printf("🆔 ID бота: %d", api.Self.ID)
+	updates := bot.GetUpdatesChan(updateConfig)
 
-	u := tgbotapi.NewUpdate(0)
-	u.Timeout = 60
+	fmt.Println("🎬 Бот готов к работе! Отправьте ссылку на YouTube видео.")
 
-	// Получаем канал обновлений
-	updates := api.GetUpdatesChan(u)
+	// Обрабатываем сигналы для graceful shutdown
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
 
-	// Обрабатываем обновления
-	for update := range updates {
-		if update.Message != nil {
-			log.Printf("📨 Получено сообщение от %s (%d): %s",
-				update.Message.From.UserName,
-				update.Message.From.ID,
-				update.Message.Text)
+	// Основной цикл обработки сообщений
+	for {
+		select {
+		case update := <-updates:
+			if update.Message != nil {
+				// Обрабатываем входящие сообщения
+				handler.HandleMessage(update.Message)
+			} else if update.CallbackQuery != nil {
+				// Обрабатываем callback'и от inline кнопок
+				handler.HandleCallback(update.CallbackQuery)
+				
+				// Отвечаем на callback
+				callback := tgbotapi.NewCallback(update.CallbackQuery.ID, "")
+				bot.Send(callback)
+			}
 
-			go handler.HandleMessage(update.Message)
-		} else if update.CallbackQuery != nil {
-			// Обрабатываем нажатия на кнопки
-			log.Printf("🔘 Получен callback: %s", update.CallbackQuery.Data)
-			go handler.HandleCallback(update.CallbackQuery)
+		case sig := <-sigChan:
+			fmt.Printf("\n🛑 Получен сигнал %v, завершаю работу...\n", sig)
+			return
 		}
 	}
 }
