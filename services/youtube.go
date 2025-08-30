@@ -10,6 +10,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"strconv"
 )
 
 // VideoFormat представляет формат видео
@@ -159,6 +160,46 @@ func (s *YouTubeService) isTelegramCompatible(format VideoFormat) bool {
 		}
 	}
 
+	return true
+}
+
+// isFileSizeTooLarge проверяет, превышает ли размер файла лимит Telegram (50MB)
+func (s *YouTubeService) isFileSizeTooLarge(fileSize string) bool {
+	// Telegram ограничивает размер файла до 50MB
+	const maxSizeMB = 50
+	
+	// Парсим размер файла (например: "52.91MiB", "1.2GiB", "500KiB")
+	fileSize = strings.TrimSpace(fileSize)
+	
+	// Если размер в гигабайтах - точно превышает лимит
+	if strings.Contains(fileSize, "GiB") {
+		return true
+	}
+	
+	// Если размер в мегабайтах - проверяем значение
+	if strings.Contains(fileSize, "MiB") {
+		// Извлекаем числовое значение
+		sizeStr := strings.Replace(fileSize, "MiB", "", 1)
+		if size, err := strconv.ParseFloat(sizeStr, 64); err == nil {
+			return size > float64(maxSizeMB)
+		}
+	}
+	
+	// Если размер в килобайтах - точно не превышает
+	if strings.Contains(fileSize, "KiB") {
+		return false
+	}
+	
+	// Если размер в байтах - проверяем
+	if strings.Contains(fileSize, "B") && !strings.Contains(fileSize, "KiB") && !strings.Contains(fileSize, "MiB") && !strings.Contains(fileSize, "GiB") {
+		sizeStr := strings.Replace(fileSize, "B", "", 1)
+		if size, err := strconv.ParseFloat(sizeStr, 64); err == nil {
+			return size > float64(maxSizeMB*1024*1024) // 50MB в байтах
+		}
+	}
+	
+	// Если не можем распарсить - пропускаем (лучше перестраховаться)
+	log.Printf("⚠️ Не удалось распарсить размер файла: %s", fileSize)
 	return true
 }
 

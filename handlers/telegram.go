@@ -12,6 +12,14 @@ import (
 	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
 )
 
+// min возвращает минимальное из двух чисел
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
 // TelegramHandler обрабатывает сообщения Telegram
 type TelegramHandler struct {
 	api            *tgbotapi.BotAPI
@@ -28,16 +36,25 @@ func NewTelegramHandler(api *tgbotapi.BotAPI, youtubeService *services.YouTubeSe
 
 // HandleMessage обрабатывает входящие сообщения
 func (h *TelegramHandler) HandleMessage(message *tgbotapi.Message) {
+	log.Printf("📨 Получено сообщение: %s от пользователя %s (ID: %d)", 
+		message.Text, message.From.UserName, message.From.ID)
+	
 	if !message.IsCommand() {
+		log.Printf("❌ Сообщение не является командой: %s", message.Text)
 		return
 	}
 
+	log.Printf("✅ Обрабатываю команду: %s", message.Command())
+
 	switch message.Command() {
 	case "start":
+		log.Printf("🚀 Обрабатываю команду /start")
 		h.sendWelcomeMessage(message.Chat.ID)
 	case "help":
+		log.Printf("📚 Обрабатываю команду /help")
 		h.sendHelpMessage(message.Chat.ID)
 	case "download":
+		log.Printf("📥 Обрабатываю команду /download")
 		args := message.CommandArguments()
 		if args == "" {
 			h.sendMessage(message.Chat.ID, "Пожалуйста, укажите URL YouTube видео после команды /download")
@@ -45,6 +62,7 @@ func (h *TelegramHandler) HandleMessage(message *tgbotapi.Message) {
 		}
 		h.handleDownload(message.Chat.ID, args)
 	default:
+		log.Printf("❓ Неизвестная команда: %s", message.Command())
 		h.sendMessage(message.Chat.ID, "Неизвестная команда. Используйте /help для получения справки.")
 	}
 }
@@ -78,9 +96,27 @@ func (h *TelegramHandler) HandleCallback(callback *tgbotapi.CallbackQuery) {
 
 // sendWelcomeMessage отправляет приветственное сообщение
 func (h *TelegramHandler) sendWelcomeMessage(chatID int64) {
-	text := `🎉 Добро пожаловать в YouTube Downloader Bot!
+	log.Printf("📨 Отправляю приветственное сообщение в чат %d", chatID)
+	
+	text := `Привет✊
 
-Этот бот поможет вам скачать видео с YouTube с выбором качества.
+@TubeLoaderBot - бот для скачивания видео и аудио.
+
+Поддерживаются сайты:
+
+ 🚀 YouTube
+ 🚀 VK
+ 🚀 RuTube
+ 🚀 Yandex.Dzen
+ 
+ Зачем?
+ 
+ 🌀 Доступ к видео без блокировок, VPN и других сложностей
+ 🌀 Скачай видео заранее, и просматривай потом, даже когда не будет доступа к интернету
+ 🌀 Фоновый режим: можно просматривать видео, даже когда используешь другие приложения
+ 🌀 Бесплатно
+
+🔽 Как это работает? 🔽
 
 📋 Доступные команды:
 /download <URL> - Скачать видео с выбором качества
@@ -201,7 +237,16 @@ func (h *TelegramHandler) sendVideo(chatID int64, videoPath string) {
 
 // sendMessage отправляет текстовое сообщение
 func (h *TelegramHandler) sendMessage(chatID int64, text string) {
+	log.Printf("📤 Отправляю сообщение в чат %d: %s", chatID, text[:min(len(text), 100)])
+	
 	msg := tgbotapi.NewMessage(chatID, text)
-	msg.ParseMode = "HTML"
-	h.api.Send(msg)
+	// Убираем HTML ParseMode, так как в тексте нет HTML-разметки
+	// msg.ParseMode = "HTML"
+	
+	_, err := h.api.Send(msg)
+	if err != nil {
+		log.Printf("❌ Ошибка при отправке сообщения: %v", err)
+	} else {
+		log.Printf("✅ Сообщение успешно отправлено в чат %d", chatID)
+	}
 }
