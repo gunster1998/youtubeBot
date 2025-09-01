@@ -28,6 +28,53 @@ type YouTubeService struct {
 	downloadDir string
 }
 
+// getYtDlpPath возвращает путь к yt-dlp
+func getYtDlpPath() string {
+	// Сначала проверяем новый путь
+	if _, err := exec.LookPath("/usr/local/bin/yt-dlp"); err == nil {
+		return "/usr/local/bin/yt-dlp"
+	}
+	
+	// Если не найден, проверяем старый путь
+	if _, err := exec.LookPath("yt-dlp"); err == nil {
+		return "yt-dlp"
+	}
+	
+	return "/usr/local/bin/yt-dlp" // По умолчанию
+}
+
+// getProxyArgs возвращает аргументы прокси для yt-dlp
+func getProxyArgs() []string {
+	var args []string
+	
+	// Проверяем ALL_PROXY (приоритетный)
+	if allProxy := os.Getenv("ALL_PROXY"); allProxy != "" {
+		args = append(args, "--proxy", allProxy)
+		log.Printf("🌐 Используется ALL_PROXY: %s", allProxy)
+		return args // ALL_PROXY имеет приоритет над остальными
+	}
+	
+	// Проверяем HTTP прокси
+	if httpProxy := os.Getenv("HTTP_PROXY"); httpProxy != "" {
+		args = append(args, "--proxy", httpProxy)
+		log.Printf("🌐 Используется HTTP_PROXY: %s", httpProxy)
+	}
+	
+	// Проверяем HTTPS прокси
+	if httpsProxy := os.Getenv("HTTPS_PROXY"); httpsProxy != "" {
+		args = append(args, "--proxy", httpsProxy)
+		log.Printf("🌐 Используется HTTPS_PROXY: %s", httpsProxy)
+	}
+	
+	// Проверяем SOCKS прокси (для обратной совместимости)
+	if socksProxy := os.Getenv("SOCKS_PROXY"); socksProxy != "" {
+		args = append(args, "--proxy", socksProxy)
+		log.Printf("🌐 Используется SOCKS_PROXY: %s", socksProxy)
+	}
+	
+	return args
+}
+
 // NewYouTubeService создает новый экземпляр YouTubeService
 func NewYouTubeService(downloadDir string) *YouTubeService {
 	return &YouTubeService{
@@ -38,73 +85,279 @@ func NewYouTubeService(downloadDir string) *YouTubeService {
 // GetVideoFormats получает список доступных форматов видео
 func (s *YouTubeService) GetVideoFormats(url string) ([]VideoFormat, error) {
 	log.Printf("🔍 Получение форматов для: %s", url)
+	log.Printf("🚀 Запуск yt-dlp для анализа видео...")
 
 	// Используем --list-formats для получения списка форматов
-	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "yt-dlp",
+	log.Printf("⏱️ Таймаут установлен на 120 секунд")
+
+	// Получаем аргументы прокси
+	proxyArgs := getProxyArgs()
+	
+	// Формируем команду с прокси (упрощаем для получения всех форматов)
+	args := []string{
 		"--list-formats",
 		"--no-playlist",
 		"--no-check-certificates",
-		url)
+		"--no-warnings",
+		// Убираем --quiet для лучшего вывода
+		// Убираем --extractor-args для получения всех форматов
+	}
+	
+	// Добавляем аргументы прокси
+	args = append(args, proxyArgs...)
+	args = append(args, url)
+	
+	cmd := exec.CommandContext(ctx, getYtDlpPath(), args...)
 
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("таймаут получения форматов (15 сек)")
+			return nil, fmt.Errorf("таймаут получения форматов (120 сек) - видео слишком большое или медленный интернет")
 		}
+		log.Printf("❌ yt-dlp ошибка: %v", err)
+		log.Printf("📋 Вывод yt-dlp: %s", string(output))
 		return nil, fmt.Errorf("ошибка yt-dlp: %v", err)
 	}
 
 	log.Printf("📋 Получен вывод yt-dlp")
+	log.Printf("🔍 Сырой вывод yt-dlp:\n%s", string(output))
 
 	// Парсим вывод yt-dlp
 	var allFormats []VideoFormat
 	lines := strings.Split(string(output), "\n")
 
+	log.Printf("📊 Всего строк в выводе: %d", len(lines))
+	
 	startParsing := false
+	headerFound := false
 
-	for _, line := range lines {
+	for i, line := range lines {
 		line = strings.TrimSpace(line)
+		
+		log.Printf("🔍 Строка %d: '%s'", i+1, line)
 
 		// Пропускаем пустые строки
 		if line == "" {
 			continue
 		}
 
-		// Начинаем парсинг после строки "Available formats for"
-		if strings.Contains(line, "Available formats for") {
+		// Начинаем парсинг после строки "Available formats for" или заголовка таблицы
+		if strings.Contains(line, "Available formats for") || strings.Contains(line, "ID  EXT") || 
+		   strings.Contains(line, "ID EXT") || strings.Contains(line, "format code") {
 			startParsing = true
+			headerFound = true
+			log.Printf("✅ Найден заголовок таблицы: '%s'", line)
 			continue
 		}
 
-		// Пропускаем заголовки и разделители
-		if strings.Contains(line, "ID  EXT") || strings.Contains(line, "---") {
+		// Пропускаем разделители
+		if strings.Contains(line, "---") {
 			continue
 		}
 
-		// Парсим только если начали и строка содержит ID
+			// Парсим строки с форматами (начинаются с ID)
 		if startParsing && regexp.MustCompile(`^\d+`).MatchString(line) {
 			parts := strings.Fields(line)
+			log.Printf("🔍 Парсинг строки: %s (частей: %d)", line, len(parts))
+			
+			// Пропускаем строки, которые не являются видео/аудио форматами
+			if len(parts) < 4 {
+				log.Printf("⚠️ Строка слишком короткая для парсинга: %s (частей: %d)", line, len(parts))
+				continue
+			}
+			
+			// Проверяем, что это действительно формат (не служебная информация)
+			if parts[1] == "audio" || parts[1] == "mp4" || parts[1] == "webm" || parts[1] == "mov" {
+				log.Printf("✅ Найден формат: %s %s %s", parts[0], parts[1], parts[2])
+			} else {
+				log.Printf("⏭️ Пропускаю неформатную строку: %s", line)
+				continue
+			}
+			
 			if len(parts) >= 4 {
-				format := VideoFormat{
-					ID:         parts[0],
-					Extension:  parts[1],
-					Resolution: parts[2],
-					FPS:        parts[3],
-					HasAudio:   !strings.Contains(line, "video only"),
+				// Пропускаем storyboard форматы
+				if strings.HasPrefix(parts[0], "sb") {
+					log.Printf("⏭️ Пропускаю storyboard формат: %s", parts[0])
+					continue
 				}
 
+				// Определяем наличие аудио по колонке CH (каналы)
+				hasAudio := false
+				if len(parts) >= 5 {
+					// Если в колонке CH есть число больше 0, значит есть аудио
+					if channels, err := strconv.Atoi(parts[4]); err == nil && channels > 0 {
+						hasAudio = true
+						log.Printf("🎵 Найдены аудио каналы: %d", channels)
+					}
+				}
+				
+				// Дополнительная проверка по тексту
+				if !hasAudio {
+					hasAudio = !strings.Contains(line, "video only")
+				}
+				
+				// Дополнительные проверки для YouTube
+				if !hasAudio && strings.Contains(line, "mp4") {
+					// Для MP4 форматов YouTube часто есть аудио
+					if !strings.Contains(line, "video only") && !strings.Contains(line, "audio only") {
+						hasAudio = true
+						log.Printf("🎵 MP4 формат без 'video only' - считаю что есть аудио")
+					}
+				}
+				
+				// Проверяем, есть ли в строке "video only" - это означает что аудио НЕТ
+				if strings.Contains(line, "video only") {
+					hasAudio = false
+					log.Printf("🔇 Найдено 'video only' - аудио отсутствует")
+				}
+				
+				log.Printf("🔍 Анализ аудио для %s: hasAudio=%v, строка='%s'", parts[0], hasAudio, line)
+				
+				// Определяем тип формата
+				formatType := parts[1] // EXT колонка
+				log.Printf("🔍 Анализирую тип формата: '%s' для ID %s", formatType, parts[0])
+				
+				if formatType == "audio" {
+					// Это аудио формат
+					formatType = "audio"
+					hasAudio = true
+					log.Printf("🎵 Обнаружен аудио формат: ID %s", parts[0])
+				} else if strings.Contains(line, "audio only") {
+					// Альтернативная проверка для аудио
+					formatType = "audio"
+					hasAudio = true
+					log.Printf("🎵 Обнаружен аудио формат (по тексту): ID %s", parts[0])
+				}
+
+				format := VideoFormat{
+					ID:         parts[0],
+					Extension:  formatType, // Используем определенный тип
+					Resolution: parts[2],
+					FPS:        parts[3],
+					HasAudio:   hasAudio,
+				}
+				
+				log.Printf("📝 Создана структура: ID=%s, Extension='%s', Resolution=%s, HasAudio=%v", 
+					format.ID, format.Extension, format.Resolution, format.HasAudio)
+
 				// Извлекаем размер файла если есть
-				if len(parts) >= 6 && parts[5] != "~" {
-					format.FileSize = parts[5]
+				// Ищем размер файла в разных колонках (yt-dlp может менять порядок)
+				format.FileSize = ""
+				for i := 5; i < len(parts); i++ {
+					if strings.Contains(parts[i], "MiB") || strings.Contains(parts[i], "GiB") || 
+					   strings.Contains(parts[i], "KiB") || strings.Contains(parts[i], "B") {
+						format.FileSize = parts[i]
+						log.Printf("📏 Размер файла: %s (колонка %d)", parts[i], i)
+						break
+					}
+				}
+				
+				if format.FileSize == "" {
+					log.Printf("⚠️ Размер файла не найден в строке: %s", line)
+				}
+
+				// Фильтруем дублирующиеся форматы (после извлечения размера)
+				if format.Extension == "audio" {
+					// Для аудио: оставляем только лучшие качества (не дублирующиеся)
+					isDuplicate := false
+					for _, existing := range allFormats {
+						if existing.Extension == "audio" {
+							// Если размер одинаковый - это дубликат
+							if existing.FileSize == format.FileSize {
+								isDuplicate = true
+								log.Printf("⏭️ Пропускаю дублирующийся аудио формат: %s (размер: %s)", format.ID, format.FileSize)
+								break
+							}
+							// Если разрешение одинаковое - оставляем лучший (больший размер)
+							if existing.Resolution == format.Resolution {
+								if s.isBetterAudioQuality(format, existing) {
+									// Заменяем худший на лучший
+									log.Printf("🔄 Заменяю худший аудио формат %s на лучший %s для разрешения %s", 
+										existing.ID, format.ID, format.Resolution)
+									// Находим и заменяем в списке
+									for i, f := range allFormats {
+										if f.ID == existing.ID {
+											allFormats[i] = format
+											break
+										}
+									}
+									goto nextFormat
+								} else {
+									// Пропускаем худший
+									log.Printf("⏭️ Пропускаю худший аудио формат %s для разрешения %s", 
+										format.ID, format.Resolution)
+									goto nextFormat
+								}
+							}
+						}
+					}
+					if isDuplicate {
+						continue
+					}
+				} else {
+					// ВРЕМЕННО: Показываем ВСЕ видео форматы для отладки
+					// Позже можно будет включить фильтрацию по звуку обратно
+					/*
+					if !format.HasAudio {
+						log.Printf("⏭️ Пропускаю видео без звука: %s (%s)", format.ID, format.Resolution)
+						goto nextFormat
+					}
+					*/
+					
+					log.Printf("✅ Видео формат добавлен: %s (%s) - %s (аудио: %v)", 
+						format.ID, format.Resolution, format.FileSize, format.HasAudio)
 				}
 
 				allFormats = append(allFormats, format)
-				log.Printf("📹 Найден формат: %s %s %s (аудио: %v)",
-					format.ID, format.Resolution, format.Extension, format.HasAudio)
+				log.Printf("📹 Найден формат: %s %s %s (аудио: %v, размер: %s)",
+					format.ID, format.Resolution, format.Extension, format.HasAudio, format.FileSize)
+			nextFormat:
+				continue
+			} else {
+				log.Printf("⚠️ Строка слишком короткая для парсинга: %s (частей: %d)", line, len(parts))
 			}
+		}
+	}
+
+	// Логируем все найденные форматы
+	log.Printf("🔍 ВСЕ найденные форматы (до фильтрации):")
+	var audioCount, videoWithAudioCount, videoWithoutAudioCount int
+	for _, f := range allFormats {
+		log.Printf("  - %s: %s %s (аудио: %v, размер: %s)", 
+			f.ID, f.Resolution, f.Extension, f.HasAudio, f.FileSize)
+		
+		if f.Extension == "audio" {
+			audioCount++
+		} else if f.HasAudio {
+			videoWithAudioCount++
+		} else {
+			videoWithoutAudioCount++
+		}
+	}
+	log.Printf("📊 Статистика: %d аудио, %d видео со звуком, %d видео без звука", 
+		audioCount, videoWithAudioCount, videoWithoutAudioCount)
+	
+	// Дополнительная отладка для видео форматов
+	if videoWithAudioCount == 0 {
+		log.Printf("⚠️ ВНИМАНИЕ: Не найдено видео форматов со звуком!")
+		log.Printf("🔍 Проверяю все видео форматы:")
+		for _, f := range allFormats {
+			if f.Extension != "audio" {
+				log.Printf("  🎥 %s: %s %s (аудио: %v, размер: %s)", 
+					f.ID, f.Resolution, f.Extension, f.HasAudio, f.FileSize)
+			}
+		}
+	}
+
+	// Проверяем, что мы действительно нашли форматы
+	if len(allFormats) == 0 {
+		log.Printf("❌ КРИТИЧЕСКАЯ ОШИБКА: Не найдено ни одного формата!")
+		log.Printf("🔍 Проверьте вывод yt-dlp выше")
+		if !headerFound {
+			log.Printf("❌ Заголовок таблицы форматов не найден!")
 		}
 	}
 
@@ -119,61 +372,76 @@ func (s *YouTubeService) GetVideoFormats(url string) ([]VideoFormat, error) {
 func (s *YouTubeService) filterTelegramCompatibleFormats(formats []VideoFormat) []VideoFormat {
 	var compatible []VideoFormat
 
+	log.Printf("🔍 Фильтрация %d форматов для совместимости с Telegram", len(formats))
+
 	for _, format := range formats {
+		log.Printf("🔍 Проверяю формат %s: %s %s (аудио: %v, размер: %s)", 
+			format.ID, format.Resolution, format.Extension, format.HasAudio, format.FileSize)
+		
 		// Telegram поддерживает только определенные форматы
 		if s.isTelegramCompatible(format) {
 			compatible = append(compatible, format)
+			log.Printf("✅ Формат %s прошел фильтрацию", format.ID)
+		} else {
+			log.Printf("❌ Формат %s не прошел фильтрацию", format.ID)
 		}
 	}
 
+	log.Printf("📊 Результат фильтрации: %d из %d форматов совместимы с Telegram", len(compatible), len(formats))
 	return compatible
 }
 
 // isTelegramCompatible проверяет совместимость формата с Telegram
 func (s *YouTubeService) isTelegramCompatible(format VideoFormat) bool {
-	// Telegram поддерживает только MP4 и MOV
+	// Разрешаем все аудио форматы (включая webm)
+	if format.Extension == "audio" {
+		log.Printf("✅ Аудио формат %s совместим с Telegram: %s (размер: %s)", 
+			format.ID, format.Resolution, format.FileSize)
+		return true
+	}
+	
+	// Для видео: только MP4 и MOV
 	if format.Extension != "mp4" && format.Extension != "mov" {
+		log.Printf("❌ Формат %s не поддерживается: %s", format.ID, format.Extension)
 		return false
 	}
 
-	// Должен быть видео+аудио поток (не только видео)
-	if !format.HasAudio {
-		return false
-	}
-
-	// Пропускаем слишком низкие разрешения
-	if format.Resolution == "48x27" || format.Resolution == "80x45" ||
-		format.Resolution == "160x90" || format.Resolution == "320x180" {
-		return false
-	}
-
-	// Пропускаем слишком высокие разрешения (Telegram ограничивает размер файла)
-	if strings.Contains(format.Resolution, "4K") || strings.Contains(format.Resolution, "8K") {
-		return false
-	}
-
-	// Проверяем размер файла (Telegram ограничивает до 50MB)
+	// Проверяем размер файла (максимум 2GB)
 	if format.FileSize != "" {
-		// Пример: "4.33MiB" -> проверяем что не слишком большой
-		if strings.Contains(format.FileSize, "GiB") {
+		if s.isFileSizeTooLarge(format.FileSize) {
+			log.Printf("📏 Формат %s превышает лимит 2GB: %s", format.ID, format.FileSize)
 			return false
 		}
 	}
 
+	log.Printf("✅ Формат %s совместим с Telegram: %s %s (размер: %s)", 
+		format.ID, format.Resolution, format.Extension, format.FileSize)
 	return true
 }
 
-// isFileSizeTooLarge проверяет, превышает ли размер файла лимит Telegram (50MB)
+// isFileSizeTooLarge проверяет, превышает ли размер файла лимит (2GB)
 func (s *YouTubeService) isFileSizeTooLarge(fileSize string) bool {
-	// Telegram ограничивает размер файла до 50MB
-	const maxSizeMB = 50
+	// Локальный сервер поддерживает файлы до 2GB
+	const maxSizeMB = 2048 // 2GB в MB
 	
-	// Парсим размер файла (например: "52.91MiB", "1.2GiB", "500KiB")
+	// Парсим размер файла (например: "≈301.82MiB", "52.91MiB", "1.2GiB", "500KiB")
 	fileSize = strings.TrimSpace(fileSize)
 	
-	// Если размер в гигабайтах - точно превышает лимит
+	// Убираем символы ≈, ~, если есть
+	fileSize = strings.TrimPrefix(fileSize, "≈")
+	fileSize = strings.TrimPrefix(fileSize, "~")
+	fileSize = strings.TrimSpace(fileSize)
+	
+	// Если размер в гигабайтах - проверяем значение
 	if strings.Contains(fileSize, "GiB") {
-		return true
+		// Извлекаем числовое значение
+		sizeStr := strings.Replace(fileSize, "GiB", "", 1)
+		if size, err := strconv.ParseFloat(sizeStr, 64); err == nil {
+			isTooLarge := size > 2.0 // Максимум 2GB
+			log.Printf("📏 Размер в гигабайтах: %s (%.2f GB) - %s", fileSize, size, 
+				func() string { if isTooLarge { return "превышает лимит 2GB" } else { return "в пределах лимита 2GB" } }())
+			return isTooLarge
+		}
 	}
 	
 	// Если размер в мегабайтах - проверяем значение
@@ -181,12 +449,16 @@ func (s *YouTubeService) isFileSizeTooLarge(fileSize string) bool {
 		// Извлекаем числовое значение
 		sizeStr := strings.Replace(fileSize, "MiB", "", 1)
 		if size, err := strconv.ParseFloat(sizeStr, 64); err == nil {
-			return size > float64(maxSizeMB)
+			isTooLarge := size > float64(maxSizeMB)
+				log.Printf("📏 Размер в мегабайтах: %s (%.2f MB) - %s", fileSize, size, 
+		func() string { if isTooLarge { return "превышает лимит 2GB" } else { return "в пределах лимита 2GB" } }())
+	return isTooLarge
 		}
 	}
 	
 	// Если размер в килобайтах - точно не превышает
 	if strings.Contains(fileSize, "KiB") {
+		log.Printf("📏 Размер в килобайтах: %s - в пределах лимита", fileSize)
 		return false
 	}
 	
@@ -194,7 +466,10 @@ func (s *YouTubeService) isFileSizeTooLarge(fileSize string) bool {
 	if strings.Contains(fileSize, "B") && !strings.Contains(fileSize, "KiB") && !strings.Contains(fileSize, "MiB") && !strings.Contains(fileSize, "GiB") {
 		sizeStr := strings.Replace(fileSize, "B", "", 1)
 		if size, err := strconv.ParseFloat(sizeStr, 64); err == nil {
-			return size > float64(maxSizeMB*1024*1024) // 50MB в байтах
+			isTooLarge := size > float64(maxSizeMB*1024*1024) // 50MB в байтах
+			log.Printf("📏 Размер в байтах: %s (%.0f B) - %s", fileSize, size, 
+				func() string { if isTooLarge { return "превышает лимит" } else { return "в пределах лимита" } }())
+			return isTooLarge
 		}
 	}
 	
@@ -212,13 +487,25 @@ func (s *YouTubeService) DownloadVideo(url string) (string, error) {
 
 	log.Printf("💾 Скачивание видео: %s", url)
 
-	// Простая команда yt-dlp для скачивания лучшего MP4 формата
-	cmd := exec.Command("yt-dlp",
+	// Получаем аргументы прокси
+	proxyArgs := getProxyArgs()
+	
+	// Команда yt-dlp для скачивания лучшего MP4 формата (поддержка до 2GB)
+	args := []string{
 		"--format", "best[ext=mp4]/best", // Лучший MP4 или любой лучший
 		"--output", filepath.Join(s.downloadDir, "%(id)s.%(ext)s"), // Имя файла по ID
 		"--no-playlist",           // Только одно видео
 		"--no-check-certificates", // Ускоряем процесс
-		url)
+		"--max-filesize", "2G",    // Максимальный размер файла 2GB
+		"--socket-timeout", "60",  // Увеличенный таймаут для больших файлов
+		"--retries", "5",          // Больше попыток для больших файлов
+	}
+	
+	// Добавляем аргументы прокси
+	args = append(args, proxyArgs...)
+	args = append(args, url)
+	
+	cmd := exec.Command(getYtDlpPath(), args...)
 
 	log.Printf("🚀 Выполняю команду: %s", strings.Join(cmd.Args, " "))
 
@@ -231,8 +518,8 @@ func (s *YouTubeService) DownloadVideo(url string) (string, error) {
 
 	log.Printf("✅ yt-dlp выполнен успешно: %s", string(output))
 
-	// Ищем скачанный файл
-	videoFile, err := s.findDownloadedFile()
+	// Ищем скачанный файл для конкретного видео
+	videoFile, err := s.findDownloadedFile(url)
 	if err != nil {
 		return "", err
 	}
@@ -241,22 +528,40 @@ func (s *YouTubeService) DownloadVideo(url string) (string, error) {
 }
 
 // DownloadVideoWithFormat скачивает видео в конкретном формате
-func (s *YouTubeService) DownloadVideoWithFormat(videoID, formatID string) (string, error) {
+func (s *YouTubeService) DownloadVideoWithFormat(videoURL, formatID string) (string, error) {
 	// Создаем папку для загрузок если не существует
 	if err := os.MkdirAll(s.downloadDir, 0755); err != nil {
 		return "", fmt.Errorf("не удалось создать папку для загрузок: %v", err)
 	}
 
-	url := fmt.Sprintf("https://www.youtube.com/watch?v=%s", videoID)
-	log.Printf("💾 Скачивание видео %s в формате %s", videoID, formatID)
+	// Очищаем только файлы для конкретного видео ID
+	if err := s.cleanVideoFiles(videoURL); err != nil {
+		log.Printf("⚠️ Не удалось очистить файлы для видео: %v", err)
+	}
 
-	// Команда yt-dlp для скачивания в конкретном формате
-	cmd := exec.Command("yt-dlp",
-		"--format", formatID,
+	log.Printf("💾 Скачивание видео %s в формате %s + аудио", videoURL, formatID)
+
+	// Получаем аргументы прокси
+	proxyArgs := getProxyArgs()
+	
+	// Команда yt-dlp для скачивания видео + аудио (поддержка до 2GB)
+	args := []string{
+		"--format", formatID + "+bestaudio/best", // Скачиваем видео + лучшее аудио
 		"--output", filepath.Join(s.downloadDir, "%(id)s.%(ext)s"),
 		"--no-playlist",
 		"--no-check-certificates",
-		url)
+		"--max-filesize", "2G",    // Максимальный размер файла 2GB
+		"--socket-timeout", "60",  // Увеличенный таймаут для больших файлов
+		"--retries", "5",          // Больше попыток для больших файлов
+		"--force-overwrites",      // Принудительно перезаписываем существующие файлы
+		"--merge-output-format", "mp4", // Объединяем в MP4 с аудио
+	}
+	
+	// Добавляем аргументы прокси
+	args = append(args, proxyArgs...)
+	args = append(args, videoURL)
+	
+	cmd := exec.Command(getYtDlpPath(), args...)
 
 	log.Printf("🚀 Выполняю команду: %s", strings.Join(cmd.Args, " "))
 
@@ -269,8 +574,8 @@ func (s *YouTubeService) DownloadVideoWithFormat(videoID, formatID string) (stri
 
 	log.Printf("✅ yt-dlp выполнен успешно: %s", string(output))
 
-	// Ищем скачанный файл
-	videoFile, err := s.findDownloadedFile()
+	// Ищем скачанный файл для конкретного видео
+	videoFile, err := s.findDownloadedFile(videoURL)
 	if err != nil {
 		return "", err
 	}
@@ -278,33 +583,295 @@ func (s *YouTubeService) DownloadVideoWithFormat(videoID, formatID string) (stri
 	return videoFile, nil
 }
 
-// findDownloadedFile ищет скачанный видео файл
-func (s *YouTubeService) findDownloadedFile() (string, error) {
+// cleanVideoFiles очищает только файлы для конкретного видео
+func (s *YouTubeService) cleanVideoFiles(videoURL string) error {
+	// Извлекаем ID видео из URL
+	videoID := extractVideoID(videoURL)
+	if videoID == "" {
+		log.Printf("⚠️ Не удалось извлечь ID видео из URL: %s", videoURL)
+		return nil
+	}
+
+	files, err := os.ReadDir(s.downloadDir)
+	if err != nil {
+		return fmt.Errorf("не удалось прочитать папку загрузок: %v", err)
+	}
+
+	// Удаляем только файлы с этим ID видео
+	deletedCount := 0
+	for _, file := range files {
+		if !file.IsDir() && strings.Contains(file.Name(), videoID) {
+			filePath := filepath.Join(s.downloadDir, file.Name())
+			if err := os.Remove(filePath); err != nil {
+				log.Printf("⚠️ Не удалось удалить файл %s: %v", filePath, err)
+			} else {
+				log.Printf("🗑️ Удален файл для видео %s: %s", videoID, filePath)
+				deletedCount++
+			}
+		}
+	}
+
+	if deletedCount > 0 {
+		log.Printf("🧹 Удалено %d файлов для видео %s", deletedCount, videoID)
+	} else {
+		log.Printf("ℹ️ Файлы для видео %s не найдены", videoID)
+	}
+	return nil
+}
+
+// extractVideoID извлекает ID видео из YouTube URL
+func extractVideoID(url string) string {
+	// Поддерживаем разные форматы YouTube URL
+	patterns := []string{
+		`youtube\.com/watch\?v=([a-zA-Z0-9_-]+)`,
+		`youtu\.be/([a-zA-Z0-9_-]+)`,
+		`youtube\.com/embed/([a-zA-Z0-9_-]+)`,
+	}
+
+	for _, pattern := range patterns {
+		re := regexp.MustCompile(pattern)
+		matches := re.FindStringSubmatch(url)
+		if len(matches) > 1 {
+			return matches[1]
+		}
+	}
+
+	return ""
+}
+
+// findDownloadedFile ищет скачанный видео файл для конкретного URL
+func (s *YouTubeService) findDownloadedFile(videoURL string) (string, error) {
+	// Извлекаем ID видео из URL
+	videoID := extractVideoID(videoURL)
+	if videoID == "" {
+		return "", fmt.Errorf("не удалось извлечь ID видео из URL: %s", videoURL)
+	}
+
 	files, err := os.ReadDir(s.downloadDir)
 	if err != nil {
 		return "", fmt.Errorf("не удалось прочитать папку загрузок: %v", err)
 	}
 
-	// Ищем любой видео файл
+	// Ищем файл с конкретным ID видео
 	var videoFile string
 	for _, file := range files {
 		if !file.IsDir() && !strings.HasSuffix(file.Name(), ".webp") {
-			videoFile = filepath.Join(s.downloadDir, file.Name())
-			break
+			// Проверяем, что файл содержит ID видео
+			if strings.Contains(file.Name(), videoID) {
+				videoFile = filepath.Join(s.downloadDir, file.Name())
+				log.Printf("🎯 Найден файл для видео %s: %s", videoID, file.Name())
+				break
+			}
 		}
 	}
 
 	if videoFile == "" {
-		return "", fmt.Errorf("не найден скачанный видео файл")
+		return "", fmt.Errorf("не найден скачанный видео файл для видео %s", videoID)
 	}
 
 	return videoFile, nil
 }
 
+// DownloadVideoFast быстро скачивает видео без анализа форматов
+func (s *YouTubeService) DownloadVideoFast(url string) (string, error) {
+	// Создаем папку для загрузок если не существует
+	if err := os.MkdirAll(s.downloadDir, 0755); err != nil {
+		return "", fmt.Errorf("не удалось создать папку для загрузок: %v", err)
+	}
+
+	log.Printf("⚡ Быстрое скачивание видео: %s", url)
+
+	// Пробуем разные стратегии скачивания
+	strategies := []struct {
+		name string
+		args []string
+	}{
+		{
+			name: "Стандартное скачивание (до 2GB)",
+			args: []string{
+				"--format", "best[ext=mp4]/best",
+				"--output", filepath.Join(s.downloadDir, "%(id)s.%(ext)s"),
+				"--no-playlist",
+				"--no-check-certificates",
+				"--no-warnings",
+				"--quiet",
+				"--max-filesize", "2G",
+				"--socket-timeout", "60",
+				"--retries", "5",
+			},
+		},
+		{
+			name: "Скачивание с обходом ограничений (до 2GB)",
+			args: []string{
+				"--format", "best",
+				"--output", filepath.Join(s.downloadDir, "%(id)s.%(ext)s"),
+				"--no-playlist",
+				"--no-check-certificates",
+				"--no-warnings",
+				"--quiet",
+				"--extractor-args", "youtube:player_client=android",
+				"--force-generic-extractor",
+				"--max-filesize", "2G",
+				"--socket-timeout", "60",
+				"--retries", "5",
+			},
+		},
+		{
+			name: "Скачивание с прокси (до 2GB)",
+			args: []string{
+				"--format", "best",
+				"--output", filepath.Join(s.downloadDir, "%(id)s.%(ext)s"),
+				"--no-playlist",
+				"--no-check-certificates",
+				"--no-warnings",
+				"--quiet",
+				"--extractor-args", "youtube:player_client=android",
+				"--max-filesize", "2G",
+				"--socket-timeout", "60",
+				"--retries", "5",
+			},
+		},
+	}
+
+	for i, strategy := range strategies {
+		log.Printf("🔄 Попытка %d: %s", i+1, strategy.name)
+		
+		// Получаем аргументы прокси
+		proxyArgs := getProxyArgs()
+		
+		// Добавляем аргументы прокси к стратегии
+		args := append(strategy.args, proxyArgs...)
+		args = append(args, url)
+		
+		cmd := exec.Command(getYtDlpPath(), args...)
+		
+		log.Printf("🚀 Выполняю команду: %s", strings.Join(cmd.Args, " "))
+		
+		output, err := cmd.CombinedOutput()
+		if err == nil {
+			log.Printf("✅ %s выполнен успешно: %s", strategy.name, string(output))
+			
+			// Ищем скачанный файл для конкретного видео
+			videoFile, err := s.findDownloadedFile(url)
+			if err != nil {
+				continue // Пробуем следующую стратегию
+			}
+			
+			return videoFile, nil
+		}
+		
+		log.Printf("❌ %s не удался: %s", strategy.name, string(output))
+	}
+
+	return "", fmt.Errorf("все стратегии скачивания не удались")
+}
+
 // CheckYtDlp проверяет наличие yt-dlp в системе
 func (s *YouTubeService) CheckYtDlp() error {
-	if _, err := exec.LookPath("yt-dlp"); err != nil {
-		return fmt.Errorf("yt-dlp не найден в системе. Установите его: brew install yt-dlp")
+	// Сначала проверяем новый путь
+	if _, err := exec.LookPath("/usr/local/bin/yt-dlp"); err == nil {
+		log.Printf("✅ yt-dlp найден по пути /usr/local/bin/yt-dlp")
+		return nil
 	}
+	
+	// Если не найден, проверяем старый путь
+	if _, err := exec.LookPath("yt-dlp"); err == nil {
+		log.Printf("✅ yt-dlp найден по пути yt-dlp")
+		return nil
+	}
+	
+	return fmt.Errorf("yt-dlp не найден в системе. Проверьте установку")
+}
+
+// CheckNetwork проверяет сетевое подключение к YouTube
+func (s *YouTubeService) CheckNetwork() error {
+	log.Printf("🌐 Проверяю сетевое подключение к YouTube...")
+	
+	// Формируем команду curl с прокси
+	args := []string{"-s", "--connect-timeout", "10", "--max-time", "30"}
+	
+	// Добавляем прокси если доступен
+	if allProxy := os.Getenv("ALL_PROXY"); allProxy != "" {
+		args = append(args, "--proxy", allProxy)
+		log.Printf("🌐 Проверка сети через ALL_PROXY: %s", allProxy)
+	} else if httpProxy := os.Getenv("HTTP_PROXY"); httpProxy != "" {
+		args = append(args, "--proxy", httpProxy)
+		log.Printf("🌐 Проверка сети через HTTP_PROXY: %s", httpProxy)
+	} else if httpsProxy := os.Getenv("HTTPS_PROXY"); httpsProxy != "" {
+		args = append(args, "--proxy", httpsProxy)
+		log.Printf("🌐 Проверка сети через HTTPS_PROXY: %s", httpsProxy)
+	}
+	
+	args = append(args, "https://www.youtube.com")
+	
+	// Проверяем доступность YouTube
+	cmd := exec.Command("curl", args...)
+	
+	if err := cmd.Run(); err != nil {
+		log.Printf("⚠️ YouTube недоступен через curl: %v", err)
+		return fmt.Errorf("проблемы с сетевым подключением к YouTube")
+	}
+	
+	log.Printf("✅ Сетевое подключение к YouTube работает")
 	return nil
+}
+
+// isBetterAudioQuality проверяет, является ли новый аудио формат лучше существующего
+func (s *YouTubeService) isBetterAudioQuality(new, existing VideoFormat) bool {
+	// Для аудио: больший размер обычно означает лучшее качество
+	if new.FileSize != "" && existing.FileSize != "" {
+		newSize := s.parseFileSize(new.FileSize)
+		existingSize := s.parseFileSize(existing.FileSize)
+		return newSize > existingSize
+	}
+	
+	// Если не можем сравнить - считаем новый лучше
+	return true
+}
+
+// isBetterQuality проверяет, является ли новый формат лучше существующего
+func (s *YouTubeService) isBetterQuality(new, existing VideoFormat) bool {
+	// Если у нового формата есть аудио, а у существующего нет - новый лучше
+	if new.HasAudio && !existing.HasAudio {
+		return true
+	}
+	
+	// Если у обоих есть аудио или у обоих нет - сравниваем по размеру
+	// Больший размер обычно означает лучшее качество
+	if new.FileSize != "" && existing.FileSize != "" {
+		newSize := s.parseFileSize(new.FileSize)
+		existingSize := s.parseFileSize(existing.FileSize)
+		return newSize > existingSize
+	}
+	
+	// Если не можем сравнить - считаем новый лучше
+	return true
+}
+
+// parseFileSize парсит размер файла в байты для сравнения
+func (s *YouTubeService) parseFileSize(fileSize string) int64 {
+	fileSize = strings.TrimSpace(fileSize)
+	fileSize = strings.TrimPrefix(fileSize, "≈")
+	fileSize = strings.TrimPrefix(fileSize, "~")
+	
+	var multiplier int64 = 1
+	if strings.Contains(fileSize, "GiB") {
+		multiplier = 1024 * 1024 * 1024
+		fileSize = strings.Replace(fileSize, "GiB", "", 1)
+	} else if strings.Contains(fileSize, "MiB") {
+		multiplier = 1024 * 1024
+		fileSize = strings.Replace(fileSize, "MiB", "", 1)
+	} else if strings.Contains(fileSize, "KiB") {
+		multiplier = 1024
+		fileSize = strings.Replace(fileSize, "KiB", "", 1)
+	} else if strings.Contains(fileSize, "B") {
+		multiplier = 1
+		fileSize = strings.Replace(fileSize, "B", "", 1)
+	}
+	
+	if size, err := strconv.ParseFloat(fileSize, 64); err == nil {
+		return int64(size * float64(multiplier))
+	}
+	
+	return 0
 }

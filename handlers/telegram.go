@@ -69,29 +69,49 @@ func (h *TelegramHandler) HandleMessage(message *tgbotapi.Message) {
 
 // HandleCallback обрабатывает нажатия на кнопки
 func (h *TelegramHandler) HandleCallback(callback *tgbotapi.CallbackQuery) {
-	// Парсим callback data: "download:videoID:formatID"
+	// Парсим callback data
 	data := strings.Split(callback.Data, ":")
-	if len(data) != 3 || data[0] != "download" {
-		return
+	
+	if len(data) == 3 && data[0] == "download" {
+		// Обычное скачивание в выбранном формате
+		videoID := data[1]
+		formatID := data[2]
+
+		// Отправляем сообщение о начале загрузки
+		msg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID,
+			fmt.Sprintf("🔄 Скачиваю видео в формате %s...", formatID))
+		h.api.Send(msg)
+
+		// Скачиваем видео в выбранном формате
+		videoPath, err := h.youtubeService.DownloadVideoWithFormat(videoID, formatID)
+		if err != nil {
+			h.sendMessage(callback.Message.Chat.ID, fmt.Sprintf("❌ Ошибка при скачивании: %v", err))
+			return
+		}
+
+		// Отправляем видео
+		h.sendVideo(callback.Message.Chat.ID, videoPath)
+		
+	} else if len(data) == 2 && data[0] == "quick" {
+		// Быстрое скачивание
+		videoID := data[1]
+		url := fmt.Sprintf("https://www.youtube.com/watch?v=%s", videoID)
+
+		// Отправляем сообщение о начале быстрой загрузки
+		msg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID,
+			"⚡ Быстрое скачивание в лучшем качестве...")
+		h.api.Send(msg)
+
+		// Быстро скачиваем видео
+		videoPath, err := h.youtubeService.DownloadVideoFast(url)
+		if err != nil {
+			h.sendMessage(callback.Message.Chat.ID, fmt.Sprintf("❌ Ошибка при быстром скачивании: %v", err))
+			return
+		}
+
+		// Отправляем видео
+		h.sendVideo(callback.Message.Chat.ID, videoPath)
 	}
-
-	videoID := data[1]
-	formatID := data[2]
-
-	// Отправляем сообщение о начале загрузки
-	msg := tgbotapi.NewEditMessageText(callback.Message.Chat.ID, callback.Message.MessageID,
-		fmt.Sprintf("🔄 Скачиваю видео в формате %s...", formatID))
-	h.api.Send(msg)
-
-	// Скачиваем видео в выбранном формате
-	videoPath, err := h.youtubeService.DownloadVideoWithFormat(videoID, formatID)
-	if err != nil {
-		h.sendMessage(callback.Message.Chat.ID, fmt.Sprintf("❌ Ошибка при скачивании: %v", err))
-		return
-	}
-
-	// Отправляем видео
-	h.sendVideo(callback.Message.Chat.ID, videoPath)
 }
 
 // sendWelcomeMessage отправляет приветственное сообщение
@@ -154,7 +174,18 @@ func (h *TelegramHandler) handleDownload(chatID int64, url string) {
 	// Получаем доступные форматы
 	formats, err := h.youtubeService.GetVideoFormats(url)
 	if err != nil {
-		h.sendMessage(chatID, fmt.Sprintf("❌ Ошибка при получении форматов: %v", err))
+		// Предлагаем быстрое скачивание при ошибке анализа
+		errorMsg := fmt.Sprintf("❌ Ошибка при получении форматов: %s\n\n💡 Попробуйте быстрое скачивание в лучшем качестве:", err.Error())
+		
+		// Добавляем диагностическую информацию
+		if strings.Contains(err.Error(), "таймаут") {
+			errorMsg += "\n\n⚠️ Возможные причины:\n• Медленный интернет\n• Блокировка YouTube\n• Проблемы с сетью"
+		} else if strings.Contains(err.Error(), "SSL") || strings.Contains(err.Error(), "handshake") {
+			errorMsg += "\n\n⚠️ Возможные причины:\n• Проблемы с SSL сертификатами\n• Блокировка на уровне провайдера\n• Необходимость VPN/прокси"
+		}
+		
+		h.sendMessage(chatID, errorMsg)
+		h.showQuickDownloadOption(chatID, url)
 		return
 	}
 
@@ -233,6 +264,21 @@ func (h *TelegramHandler) sendVideo(chatID int64, videoPath string) {
 
 	log.Printf("✅ Видео успешно отправлено в Telegram")
 	log.Printf("💾 Файл сохранен в: %s", videoPath)
+}
+
+// showQuickDownloadOption показывает опцию быстрого скачивания
+func (h *TelegramHandler) showQuickDownloadOption(chatID int64, url string) {
+	// Создаем кнопку для быстрого скачивания
+	button := tgbotapi.NewInlineKeyboardButtonData("⚡ Быстрое скачивание (лучшее качество)", 
+		fmt.Sprintf("quick:%s", utils.ExtractVideoID(url)))
+	
+	// Создаем правильную структуру кнопок
+	buttons := [][]tgbotapi.InlineKeyboardButton{{button}}
+	keyboard := tgbotapi.NewInlineKeyboardMarkup(buttons...)
+	
+	msg := tgbotapi.NewMessage(chatID, "🎬 Выберите действие:")
+	msg.ReplyMarkup = keyboard
+	h.api.Send(msg)
 }
 
 // sendMessage отправляет текстовое сообщение

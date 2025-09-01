@@ -46,9 +46,55 @@ brew install yt-dlp
 # Клонирование репозитория
 git clone https://github.com/yourusername/youtubeBot.git
 cd youtubeBot
+
+### 2. Настройка VPN/Прокси (для России и других стран с блокировкой YouTube)
+
+**⚠️ Обязательно для России!** YouTube заблокирован, нужен VPN или прокси.
+
+#### Вариант A: VLESS-Reality прокси (рекомендуется)
+```bash
+# Настроить VLESS-Reality прокси на портах:
+# SOCKS5: 127.0.0.1:10808
+# HTTP: 127.0.0.1:10809
+
+# Добавить в config.env:
+ALL_PROXY=socks5h://127.0.0.1:10808
+HTTP_PROXY=http://127.0.0.1:10809
+HTTPS_PROXY=http://127.0.0.1:10809
+NO_PROXY=localhost,127.0.0.1,::1,unix
 ```
 
-### 2. Настройка локального сервера Telegram API
+#### Вариант B: SOCKS прокси
+```bash
+# Установить SOCKS прокси (например, через SSH туннель)
+ssh -D 1080 user@remote-server.com
+
+# Или использовать готовые SOCKS прокси сервисы
+# Настроить в config.env:
+SOCKS_PROXY=socks5://127.0.0.1:1080
+```
+
+#### Вариант C: HTTP прокси
+```bash
+# Установить HTTP прокси
+sudo apt install squid
+
+# Настроить в config.env:
+HTTP_PROXY=http://127.0.0.1:8080
+HTTPS_PROXY=http://127.0.0.1:8080
+```
+
+#### Вариант D: Системный VPN
+```bash
+# Установить OpenVPN
+sudo apt install openvpn
+
+# Или использовать готовые VPN сервисы
+# Бот автоматически будет использовать системный VPN
+```
+```
+
+### 3. Настройка локального сервера Telegram API
 
 Бот работает с локальным сервером Telegram API для обхода ограничений на размер файлов.
 
@@ -57,7 +103,7 @@ cd youtubeBot
 curl -s http://127.0.0.1:8081/health
 ```
 
-### 3. Конфигурация
+### 4. Конфигурация
 
 ```bash
 # Копируем пример конфигурации
@@ -76,7 +122,7 @@ DOWNLOAD_DIR=./downloads
 MAX_FILE_SIZE=0
 ```
 
-### 4. Запуск
+### 5. Запуск
 
 ```bash
 # Сборка и запуск
