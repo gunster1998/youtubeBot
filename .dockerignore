@@ -1,0 +1,44 @@
+# Игнорируем ненужные файлы для Docker
+.git
+.gitignore
+README.md
+IMPROVEMENTS.md
+*.md
+deploy.sh
+run_improved.sh
+youtubebot.service
+docker-compose.yml
+Dockerfile
+.dockerignore
+
+# Временные файлы
+*.log
+*.tmp
+downloads/*
+cache/*
+logs/*
+
+# Конфигурационные файлы с токенами
+config.env
+config.env.production
+*.env
+
+# Собранные бинарники
+youtubeBot
+*.exe
+*.dll
+
+# IDE файлы
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS файлы
+.DS_Store
+Thumbs.db
+
+
+
+
+
