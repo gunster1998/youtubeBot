@@ -581,7 +581,7 @@ func (s *YouTubeService) DownloadVideoWithFormat(videoURL, formatID string) (str
 		// Команда yt-dlp для скачивания видео + аудио (поддержка до 2GB)
 		args := []string{
 			"--format", formatID + "+bestaudio/best", // Скачиваем видео + лучшее аудио
-			"--output", filepath.Join(s.downloadDir, "%(id)s.%(ext)s"),
+			"--output", filepath.Join(s.downloadDir, "%(id)s_" + formatID + ".%(ext)s"),
 			"--no-playlist",
 			"--no-check-certificates",
 			"--max-filesize", "2G",    // Максимальный размер файла 2GB
@@ -704,6 +704,7 @@ func extractVideoID(url string) string {
 		`youtube\.com/watch\?v=([a-zA-Z0-9_-]+)`,
 		`youtu\.be/([a-zA-Z0-9_-]+)`,
 		`youtube\.com/embed/([a-zA-Z0-9_-]+)`,
+		`youtube\.com/shorts/([a-zA-Z0-9_-]+)`, // Добавляем поддержку YouTube Shorts
 	}
 
 	for _, pattern := range patterns {

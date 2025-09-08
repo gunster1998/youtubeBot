@@ -425,6 +425,80 @@ func (b *LocalBot) SendVideoFormatsOnly(chatID int64, text string, formats []ser
 	return nil
 }
 
+// SendAllFormats отправляет все форматы (аудио и видео) в одном меню
+func (b *LocalBot) SendAllFormats(chatID int64, text string, formats []services.VideoFormat) error {
+	log.Printf("🎬 Отправляю все форматы (%d штук)", len(formats))
+	
+	// Отладка: показываем все форматы
+	log.Printf("🔍 Детали всех форматов для меню:")
+	for i, f := range formats {
+		formatType := "🎥"
+		if f.Extension == "audio" {
+			formatType = "🎵"
+		}
+		log.Printf("  %s %d. ID: %s, Resolution: %s, Extension: %s, HasAudio: %v, Size: %s", 
+			formatType, i+1, f.ID, f.Resolution, f.Extension, f.HasAudio, f.FileSize)
+	}
+	
+	// Создаем inline keyboard для всех форматов
+	var keyboard [][]map[string]interface{}
+	
+	// Добавляем кнопки для каждого формата
+	for _, format := range formats {
+		// Выбираем иконку в зависимости от типа
+		icon := "🎥"
+		if format.Extension == "audio" {
+			icon = "🎵"
+		}
+		
+		buttonText := fmt.Sprintf("%s %s / %s", icon, format.Resolution, format.FileSize)
+		if format.FileSize == "" {
+			buttonText = fmt.Sprintf("%s %s / ~?", icon, format.Resolution)
+		}
+		
+		// Создаем callback data для кнопки
+		callbackData := fmt.Sprintf("format_%s_%s", format.ID, format.Resolution)
+		
+		keyboard = append(keyboard, []map[string]interface{}{
+			{
+				"text":          buttonText,
+				"callback_data": callbackData,
+			},
+		})
+	}
+	
+	// Создаем сообщение с keyboard
+	message := map[string]interface{}{
+		"chat_id":      chatID,
+		"text":         text,
+		"reply_markup": map[string]interface{}{"inline_keyboard": keyboard},
+	}
+	
+	jsonData, err := json.Marshal(message)
+	if err != nil {
+		return fmt.Errorf("ошибка маршалинга keyboard: %v", err)
+	}
+	
+	// Отправляем запрос
+	resp, err := b.Client.Post(
+		fmt.Sprintf("%s/bot%s/sendMessage", b.APIURL, b.Token),
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	if err != nil {
+		return fmt.Errorf("ошибка отправки keyboard: %v", err)
+	}
+	defer resp.Body.Close()
+	
+	if resp.StatusCode != http.StatusOK {
+		bodyBytes, _ := io.ReadAll(resp.Body)
+		return fmt.Errorf("неуспешный статус отправки keyboard: %d, ответ: %s", resp.StatusCode, string(bodyBytes))
+	}
+	
+	log.Printf("✅ Все форматы отправлены успешно (%d кнопок)", len(keyboard))
+	return nil
+}
+
 // SendAudioFormatsOnly отправляет только аудио форматы без кнопки "Мгновенно"
 func (b *LocalBot) SendAudioFormatsOnly(chatID int64, text string, formats []services.VideoFormat) error {
 	log.Printf("🎵 Отправляю только аудио форматы (%d штук)", len(formats))
@@ -982,7 +1056,15 @@ func main() {
 							
 							// Получаем список форматов
 							log.Printf("📋 Вызываю GetVideoFormats для %s...", platformInfo.DisplayName)
-							formats, err := bot.universalService.GetVideoFormats(message.Text)
+							// Получаем доступные форматы через youtubeService для YouTube
+							var formats []services.VideoFormat
+							var err error
+							
+							if platformInfo.Type == services.PlatformYouTube || platformInfo.Type == services.PlatformYouTubeShorts {
+								formats, err = bot.youtubeService.GetVideoFormats(message.Text)
+							} else {
+								formats, err = bot.universalService.GetVideoFormats(message.Text)
+							}
 							if err != nil {
 								log.Printf("❌ Ошибка GetVideoFormats: %v", err)
 								
@@ -1016,7 +1098,7 @@ func main() {
 							log.Printf("📊 Получено форматов: %d", len(formats))
 							
 							// Уведомляем о завершении анализа
-							bot.SendMessage(message.Chat.ID, "✅ Анализ завершен! Найдено доступных форматов.")
+							bot.SendMessage(message.Chat.ID, "✅ Анализ завершен! Найдено несколько доступных форматов.")
 							
 							// Проверяем, что URL в кэше соответствует текущему запросу
 							cachedURL := bot.videoURLCache[message.Chat.ID]
@@ -1070,29 +1152,43 @@ func main() {
 								}
 							}
 							
-							// Для каждого разрешения выбираем ТОЛЬКО форматы С АУДИО
+							// Для каждого разрешения выбираем ЛУЧШИЙ формат
 							for resolution, formats := range resolutionGroups {
 								if len(formats) == 0 {
 									continue
 								}
 								
-								// Ищем формат с аудио для этого разрешения
-								var audioFormat *services.VideoFormat
+								// Сортируем форматы по размеру файла (от меньшего к большему)
+								sort.Slice(formats, func(i, j int) bool {
+									sizeI := parseFileSize(formats[i].FileSize)
+									sizeJ := parseFileSize(formats[j].FileSize)
+									return sizeI < sizeJ
+								})
+								
+								// Выбираем лучший формат для этого разрешения
+								var bestFormat *services.VideoFormat
+								
+								// Сначала ищем формат с аудио
 								for _, f := range formats {
 									if f.HasAudio {
-										audioFormat = &f
+										bestFormat = &f
+										log.Printf("🎵 Найден формат с аудио для %s: %s (%s)", 
+											resolution, f.ID, f.FileSize)
 										break
 									}
 								}
 								
-								// Добавляем ТОЛЬКО если есть аудио
-								if audioFormat != nil {
-									videoFormats = append(videoFormats, *audioFormat)
-									log.Printf("🎥 Добавлен в видео: %s (%s) - %s (аудио: true)", 
-										audioFormat.ID, audioFormat.Resolution, audioFormat.FileSize)
-								} else {
-									log.Printf("⏭️ Пропускаю разрешение %s - нет форматов с аудио", resolution)
+								// Если нет формата с аудио, берем самый маленький
+								if bestFormat == nil {
+									bestFormat = &formats[0]
+									log.Printf("📹 Нет аудио для %s, беру самый маленький: %s (%s)", 
+										resolution, bestFormat.ID, bestFormat.FileSize)
 								}
+								
+								// Добавляем лучший формат
+								videoFormats = append(videoFormats, *bestFormat)
+								log.Printf("🎥 Добавлен в видео: %s (%s) - %s (аудио: %v)", 
+									bestFormat.ID, bestFormat.Resolution, bestFormat.FileSize, bestFormat.HasAudio)
 							}
 							
 							log.Printf("📊 Найдено %d аудио и %d видео форматов", len(audioFormats), len(videoFormats))
@@ -1134,10 +1230,23 @@ func main() {
 								}
 							}
 							
-							// Отправляем подменю выбора типа
-							if err := bot.SendFormatTypeMenu(message.Chat.ID, len(audioFormats), len(videoFormats)); err != nil {
-								log.Printf("❌ Ошибка отправки меню выбора типа: %v", err)
-								bot.SendMessage(message.Chat.ID, "❌ Ошибка создания меню выбора")
+							// Создаем объединенный список всех форматов
+							var allFormats []services.VideoFormat
+							
+							// Добавляем аудио форматы
+							for _, format := range audioFormats {
+								allFormats = append(allFormats, format)
+							}
+							
+							// Добавляем видео форматы
+							for _, format := range videoFormats {
+								allFormats = append(allFormats, format)
+							}
+							
+							// Отправляем все форматы сразу
+							if err := bot.SendAllFormats(message.Chat.ID, "🎬 Доступные форматы:", allFormats); err != nil {
+								log.Printf("❌ Ошибка отправки форматов: %v", err)
+								bot.SendMessage(message.Chat.ID, "❌ Ошибка создания меню форматов")
 								// Обновляем метрики для ошибки
 								duration := time.Since(startTime)
 								bot.UpdateMetrics("get_formats", false, duration)
@@ -1352,8 +1461,15 @@ func main() {
 									bot.SendMessage(callback.Message.Chat.ID, "📥 Скачиваю файл...")
 									bot.SendMessage(callback.Message.Chat.ID, "⏳ Загрузка может занять несколько минут в зависимости от размера файла...")
 									
-							// Реальная загрузка через universalService
-							videoPath, err := bot.universalService.DownloadVideoWithFormat(videoURL, formatID)
+							// Реальная загрузка через правильный сервис
+							var videoPath string
+							var err error
+							
+							if platform == "youtube" || platform == "youtube_shorts" {
+								videoPath, err = bot.youtubeService.DownloadVideoWithFormat(videoURL, formatID)
+							} else {
+								videoPath, err = bot.universalService.DownloadVideoWithFormat(videoURL, formatID)
+							}
 									if err != nil {
 										log.Printf("❌ Ошибка загрузки видео: %v", err)
 										
