@@ -1325,6 +1325,14 @@ func main() {
 					// Обновляем метрики
 					bot.updateMetrics(1, 0, 0, 0, 0, 0)
 					
+					// Добавляем recovery от panic
+					defer func() {
+						if r := recover(); r != nil {
+							log.Printf("🚨 PANIC RECOVERED: %v", r)
+							bot.SendMessage(message.Chat.ID, "❌ Произошла внутренняя ошибка. Попробуйте позже.")
+						}
+					}()
+					
 					// Обрабатываем команды
 					if message.Text == "/start" {
 						platforms := bot.universalService.GetSupportedPlatforms()
@@ -1542,6 +1550,12 @@ func main() {
 					} else if len(message.Text) > 10 && bot.universalService.IsValidURL(message.Text) {
 						// Видео ссылка - показываем доступные форматы
 						log.Printf("🔍 Обрабатываю видео ссылку: %s", message.Text)
+						
+						// Валидация URL на безопасность
+						if !bot.validateURL(message.Text) {
+							bot.SendMessage(message.Chat.ID, "❌ Небезопасная ссылка. Используйте только YouTube ссылки.")
+							continue
+						}
 						
 						// Определяем платформу
 						platformInfo := bot.universalService.GetPlatformInfo(message.Text)
@@ -2301,6 +2315,12 @@ func (b *LocalBot) createVideoCaption(metadata *services.VideoMetadata, formatID
 
 // validateVideoFile проверяет валидность видео файла
 func (b *LocalBot) validateVideoFile(videoPath string) bool {
+	// Защита от path traversal
+	if !b.isSafePath(videoPath) {
+		log.Printf("❌ Небезопасный путь к файлу: %s", videoPath)
+		return false
+	}
+	
 	// Проверяем существование файла
 	if _, err := os.Stat(videoPath); os.IsNotExist(err) {
 		log.Printf("❌ Файл не существует: %s", videoPath)
@@ -2345,6 +2365,76 @@ func (b *LocalBot) validateVideoFile(videoPath string) bool {
 	
 	log.Printf("✅ Файл прошел валидацию: %s (%d байт)", videoPath, fileInfo.Size())
 	return true
+}
+
+// isSafePath проверяет безопасность пути (защита от path traversal)
+func (b *LocalBot) isSafePath(path string) bool {
+	// Проверяем на path traversal атаки
+	if strings.Contains(path, "..") || strings.Contains(path, "//") {
+		return false
+	}
+	
+	// Проверяем что путь находится в разрешенной директории
+	cleanPath := filepath.Clean(path)
+	downloadDir := "./downloads"
+	
+	// Получаем абсолютные пути
+	absPath, err := filepath.Abs(cleanPath)
+	if err != nil {
+		return false
+	}
+	
+	absDownloadDir, err := filepath.Abs(downloadDir)
+	if err != nil {
+		return false
+	}
+	
+	// Проверяем что файл находится внутри download директории
+	return strings.HasPrefix(absPath, absDownloadDir)
+}
+
+// validateURL проверяет безопасность URL
+func (b *LocalBot) validateURL(url string) bool {
+	// Проверяем длину URL
+	if len(url) > 2048 {
+		log.Printf("❌ URL слишком длинный: %d символов", len(url))
+		return false
+	}
+	
+	// Проверяем на подозрительные символы
+	suspiciousChars := []string{"<", ">", "\"", "'", "&", "script", "javascript", "data:"}
+	for _, char := range suspiciousChars {
+		if strings.Contains(strings.ToLower(url), char) {
+			log.Printf("❌ URL содержит подозрительные символы: %s", char)
+			return false
+		}
+	}
+	
+	// Проверяем что это YouTube URL
+	if !strings.Contains(url, "youtube.com") && !strings.Contains(url, "youtu.be") {
+		log.Printf("❌ URL не является YouTube ссылкой: %s", url)
+		return false
+	}
+	
+	return true
+}
+
+// sanitizeInput очищает пользовательский ввод
+func (b *LocalBot) sanitizeInput(input string) string {
+	// Удаляем потенциально опасные символы
+	dangerousChars := []string{"<", ">", "\"", "'", "&", "script", "javascript", "data:", "file:", "ftp:"}
+	result := input
+	
+	for _, char := range dangerousChars {
+		result = strings.ReplaceAll(strings.ToLower(result), char, "")
+	}
+	
+	// Ограничиваем длину
+	if len(result) > 1000 {
+		result = result[:1000]
+	}
+	
+	return strings.TrimSpace(result)
 }
 
 // extractResolutionNumber извлекает числовое значение разрешения
