@@ -266,8 +266,8 @@ func (b *LocalBot) SendVideo(chatID int64, videoPath, caption string) error {
 	// Добавляем chat_id
 	writer.WriteField("chat_id", fmt.Sprintf("%d", chatID))
 	
-	// Добавляем caption с описанием бота
-	botCaption := fmt.Sprintf("%s\n\n🤖 Скачано через @YouLoaderTube_bot\n🔗 https://t.me/YouLoaderTube_bot", caption)
+	// Caption уже содержит описание бота, не дублируем
+	botCaption := caption
 	writer.WriteField("caption", botCaption)
 
 	// Добавляем длительность (в секундах)
@@ -1237,10 +1237,10 @@ func main() {
 							delete(bot.platformCache, chatID)
 							log.Printf("🗑️ Очистил старый кэш для чата %d", chatID)
 							
-							// Очищаем историю чата (удаляем старые сообщения бота)
-							if err := bot.ClearChatHistory(chatID); err != nil {
-								log.Printf("⚠️ Не удалось очистить историю чата: %v", err)
-							}
+							// Очистка истории отключена - не удаляем сообщения пользователя
+							// if err := bot.ClearChatHistory(chatID); err != nil {
+							// 	log.Printf("⚠️ Не удалось очистить историю чата: %v", err)
+							// }
 							
 							log.Printf("🚀 Запускаю анализ видео для: %s", url)
 							bot.SendMessage(chatID, "🔍 Анализирую видео... ⏳ Пожалуйста, подождите до 2 минут для больших видео.")
@@ -1724,10 +1724,43 @@ func main() {
 									fileExt := strings.ToLower(filepath.Ext(videoPath))
 									isAudio := fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".webm" || fileExt == ".ogg"
 									
+									// Получаем метаданные для красивого caption
+									var metadata *services.VideoMetadata
+									if platform == "youtube" || platform == "youtube_shorts" {
+										metadata, err = bot.youtubeService.GetVideoMetadata(videoURL)
+										if err != nil {
+											log.Printf("⚠️ Не удалось получить метаданные для caption: %v", err)
+										}
+									}
+									
+									// Создаем красивый caption
+									var caption string
+									if metadata != nil {
+										// Находим разрешение выбранного формата из кэша
+										var resolution string
+										if cachedFormats, exists := bot.formatCache[callback.Message.Chat.ID]; exists {
+											for _, format := range cachedFormats {
+												if format.ID == formatID {
+													resolution = format.Resolution
+													break
+												}
+											}
+										}
+										
+										caption = bot.createVideoCaption(metadata, formatID, resolution)
+									} else {
+										// Fallback на простое описание
+										if isAudio {
+											caption = fmt.Sprintf("Аудио в формате %s", formatID)
+										} else {
+											caption = fmt.Sprintf("Видео в формате %s", formatID)
+										}
+									}
+									
 									// Отправляем файл в Telegram
 									if isAudio {
 										// Для аудио файлов
-										if err := bot.SendVideo(callback.Message.Chat.ID, videoPath, fmt.Sprintf("Аудио в формате %s", formatID)); err != nil {
+										if err := bot.SendVideo(callback.Message.Chat.ID, videoPath, caption); err != nil {
 											log.Printf("❌ Ошибка отправки аудио: %v", err)
 											bot.SendMessage(callback.Message.Chat.ID, fmt.Sprintf("❌ Ошибка отправки: %v", err))
 											// Удаляем файл при ошибке
@@ -1744,7 +1777,7 @@ func main() {
 										}
 									} else {
 										// Для видео файлов
-										if err := bot.SendVideo(callback.Message.Chat.ID, videoPath, fmt.Sprintf("Видео в формате %s", formatID)); err != nil {
+										if err := bot.SendVideo(callback.Message.Chat.ID, videoPath, caption); err != nil {
 											log.Printf("❌ Ошибка отправки видео: %v", err)
 											bot.SendMessage(callback.Message.Chat.ID, fmt.Sprintf("❌ Ошибка отправки: %v", err))
 											// Удаляем файл при ошибке
@@ -1885,6 +1918,42 @@ func extractVideoID(url string) string {
 		return matches[1]
 	}
 	return ""
+}
+
+// createVideoCaption создает красивый caption для скачанного видео
+func (b *LocalBot) createVideoCaption(metadata *services.VideoMetadata, formatID, resolution string) string {
+	// Обрезаем описание если оно слишком длинное
+	description := metadata.Description
+	if len(description) > 200 {
+		description = description[:200] + "..."
+	}
+	
+	// Создаем красивый caption как у конкурентов
+	caption := fmt.Sprintf(`🎬 %s
+
+👤 Автор: %s
+⏱️ Длительность: %s
+👁️ Просмотры: %s
+📅 Дата: %s
+
+📝 Описание:
+%s
+
+🎥 Разрешение: %s
+
+🔗 Оригинал: %s
+
+🤖 Скачано через @You2beLoaders_bot`, 
+		metadata.Title,
+		metadata.Author,
+		metadata.Duration,
+		metadata.Views,
+		metadata.UploadDate,
+		description,
+		resolution,
+		metadata.OriginalURL)
+	
+	return caption
 }
 
 // extractResolutionNumber извлекает числовое значение разрешения

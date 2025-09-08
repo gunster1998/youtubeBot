@@ -35,6 +35,7 @@ type VideoMetadata struct {
 	Description string
 	Thumbnail   string
 	UploadDate  string
+	OriginalURL string
 }
 
 // YouTubeService предоставляет методы для работы с YouTube
@@ -1005,10 +1006,14 @@ func (s *YouTubeService) GetVideoMetadata(url string) (*VideoMetadata, error) {
 		return nil, fmt.Errorf("ошибка парсинга метаданных: %v", err)
 	}
 	
+	// Устанавливаем оригинальный URL
+	metadata.OriginalURL = url
+	
 	log.Printf("✅ Метаданные получены: %s - %s", metadata.Title, metadata.Author)
 	log.Printf("🖼️ Миниатюра: %s", metadata.Thumbnail)
 	log.Printf("⏱️ Длительность: %s", metadata.Duration)
 	log.Printf("👁️ Просмотры: %s", metadata.Views)
+	log.Printf("🔗 Оригинал: %s", metadata.OriginalURL)
 	return metadata, nil
 }
 
@@ -1097,6 +1102,11 @@ func (s *YouTubeService) parseVideoMetadata(jsonOutput string) (*VideoMetadata, 
 	// Извлекаем дату загрузки
 	if uploadDate, ok := data["upload_date"].(string); ok {
 		metadata.UploadDate = s.formatUploadDate(uploadDate)
+	}
+	
+	// Извлекаем оригинальный URL
+	if webpageURL, ok := data["webpage_url"].(string); ok {
+		metadata.OriginalURL = webpageURL
 	}
 	
 	return metadata, nil
