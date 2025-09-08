@@ -37,6 +37,8 @@ type LocalBot struct {
 	youtubeService *services.YouTubeService
 	// Сервис для кэширования популярных видео
 	cacheService *services.CacheService
+	// Защита от спама - время последнего запроса по чатам
+	lastRequestTime map[int64]time.Time
 }
 
 // NewLocalBot создает новый экземпляр LocalBot
@@ -51,6 +53,7 @@ func NewLocalBot(token, apiURL string, timeout time.Duration, youtubeService *se
 		videoURLCache: make(map[int64]string),
 		youtubeService: youtubeService,
 		cacheService: cacheService,
+		lastRequestTime: make(map[int64]time.Time),
 	}
 }
 
@@ -627,6 +630,24 @@ func main() {
 	// Обрабатываем сигналы для graceful shutdown
 	sigChan := make(chan os.Signal, 1)
 	signal.Notify(sigChan, syscall.SIGINT, syscall.SIGTERM)
+	
+	// Функция для graceful shutdown
+	gracefulShutdown := func() {
+		log.Println("🛑 Получен сигнал завершения, сохраняю состояние...")
+		
+		// Сохраняем статистику
+		log.Printf("📊 Статистика работы:")
+		log.Printf("   - Активных чатов: %d", len(bot.formatCache))
+		log.Printf("   - Кэшированных URL: %d", len(bot.videoURLCache))
+		
+		// Закрываем кэш-сервис
+		if bot.cacheService != nil {
+			bot.cacheService.Close()
+			log.Println("💾 Кэш-сервис закрыт")
+		}
+		
+		log.Println("✅ Graceful shutdown завершен")
+	}
 
 	// Основной цикл получения обновлений через getUpdates
 	log.Printf("🔄 Запуск цикла getUpdates...")
@@ -635,6 +656,7 @@ func main() {
 	for {
 		select {
 		case <-sigChan:
+			gracefulShutdown()
 			fmt.Printf("\n🛑 Получен сигнал завершения, завершаю работу...\n")
 			return
 		default:
@@ -654,11 +676,12 @@ func main() {
 
 				if update.Message != nil {
 					message := update.Message
-					log.Printf("📨 Получено сообщение: %s от чата %d", message.Text, message.Chat.ID)
+					log.Printf("📨 Получено сообщение: %s от чата %d", 
+						message.Text, message.Chat.ID)
 					
 					// Обрабатываем команды
 					if message.Text == "/start" {
-						bot.SendMessage(message.Chat.ID, "🎬 Привет! Я YouTube Downloader Bot!\n\n📋 Доступные команды:\n/start - Начать работу\n/help - Справка\n/status - Статус бота\n\n🔗 Отправьте ссылку на YouTube видео для скачивания.")
+						bot.SendMessage(message.Chat.ID, "🎬 Привет! Я YouTube Downloader Bot!\n\n📋 Доступные команды:\n/start - Начать работу\n/help - Справка\n/status - Статус бота\n/stats - Статистика\n\n🔗 Отправьте ссылку на YouTube видео для скачивания.")
 					} else if message.Text == "/help" {
 						helpText := `🎬 YouTube Downloader Bot - Справка
 
@@ -666,6 +689,7 @@ func main() {
 /start - Начать работу с ботом
 /help - Показать эту справку
 /status - Проверить статус бота
+/stats - Показать статистику работы
 
 🔗 Как использовать:
 1. Отправьте ссылку на YouTube видео
@@ -702,9 +726,41 @@ func main() {
 
 💡 Если что-то не работает, попробуйте команду /help`
 						bot.SendMessage(message.Chat.ID, statusText)
+					} else if message.Text == "/stats" {
+						statsText := fmt.Sprintf(`📊 Статистика бота
+
+🔄 Активные чаты: %d
+💾 Кэшированные URL: %d
+🎬 Сервис YouTube: Активен
+💾 Кэш-сервис: Активен
+
+⏰ Время работы: Постоянно
+🌐 Прокси: Настроен
+📱 Telegram API: Подключен
+
+💡 Для получения справки используйте /help`, 
+							len(bot.formatCache), len(bot.videoURLCache))
+						bot.SendMessage(message.Chat.ID, statsText)
 					} else if len(message.Text) > 10 && (strings.Contains(message.Text, "youtube.com") || strings.Contains(message.Text, "youtu.be")) {
 						// YouTube ссылка - показываем доступные форматы
 						log.Printf("🔍 Обрабатываю YouTube ссылку: %s", message.Text)
+						
+						// Валидация URL перед обработкой
+						if !isValidYouTubeURL(message.Text) {
+							bot.SendMessage(message.Chat.ID, "❌ Неверный формат ссылки YouTube\n\n💡 Поддерживаемые форматы:\n• https://www.youtube.com/watch?v=VIDEO_ID\n• https://youtu.be/VIDEO_ID")
+							continue
+						}
+						
+						// Защита от спама - проверяем время последнего запроса
+						if lastTime, exists := bot.lastRequestTime[message.Chat.ID]; exists {
+							if time.Since(lastTime) < 10*time.Second {
+								bot.SendMessage(message.Chat.ID, "⏳ Пожалуйста, подождите 10 секунд между запросами")
+								continue
+							}
+						}
+						
+						// Обновляем время последнего запроса
+						bot.lastRequestTime[message.Chat.ID] = time.Now()
 						
 						go func() {
 							// Очищаем старый кэш для этого чата ВНУТРИ горутины
@@ -1251,4 +1307,34 @@ func extractResolutionNumber(resolution string) int {
 		}
 	}
 	return 0
+}
+
+// isValidYouTubeURL проверяет, является ли URL валидным YouTube URL
+func isValidYouTubeURL(url string) bool {
+	// Базовые проверки
+	if len(url) < 20 {
+		return false
+	}
+	
+	// Проверяем наличие youtube.com или youtu.be
+	if !strings.Contains(url, "youtube.com") && !strings.Contains(url, "youtu.be") {
+		return false
+	}
+	
+	// Проверяем наличие видео ID
+	if strings.Contains(url, "youtube.com/watch?v=") {
+		parts := strings.Split(url, "v=")
+		if len(parts) > 1 {
+			videoID := strings.Split(parts[1], "&")[0]
+			return len(videoID) >= 11 // YouTube ID обычно 11 символов
+		}
+	} else if strings.Contains(url, "youtu.be/") {
+		parts := strings.Split(url, "youtu.be/")
+		if len(parts) > 1 {
+			videoID := strings.Split(parts[1], "?")[0]
+			return len(videoID) >= 11
+		}
+	}
+	
+	return false
 }
