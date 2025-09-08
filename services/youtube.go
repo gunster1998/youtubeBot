@@ -547,8 +547,8 @@ func (s *YouTubeService) DownloadVideo(url string) (string, error) {
 
 	log.Printf("✅ yt-dlp выполнен успешно: %s", string(output))
 
-	// Ищем скачанный файл для конкретного видео
-	videoFile, err := s.findDownloadedFile(url)
+	// Ищем скачанный файл для конкретного видео (без формата для старого метода)
+	videoFile, err := s.findDownloadedFileOld(url)
 	if err != nil {
 		return "", err
 	}
@@ -563,8 +563,8 @@ func (s *YouTubeService) DownloadVideoWithFormat(videoURL, formatID string) (str
 		return "", fmt.Errorf("не удалось создать папку для загрузок: %v", err)
 	}
 
-	// Очищаем только файлы для конкретного видео ID
-	if err := s.cleanVideoFiles(videoURL); err != nil {
+	// Очищаем только файлы для конкретного видео ID и формата
+	if err := s.cleanVideoFiles(videoURL, formatID); err != nil {
 		log.Printf("⚠️ Не удалось очистить файлы для видео: %v", err)
 	}
 
@@ -609,7 +609,7 @@ func (s *YouTubeService) DownloadVideoWithFormat(videoURL, formatID string) (str
 		log.Printf("✅ yt-dlp выполнен успешно: %s", string(output))
 
 		// Ищем скачанный файл для конкретного видео
-		foundFile, findErr := s.findDownloadedFile(videoURL)
+		foundFile, findErr := s.findDownloadedFile(videoURL, formatID)
 		if findErr != nil {
 			return findErr
 		}
@@ -627,8 +627,41 @@ func (s *YouTubeService) DownloadVideoWithFormat(videoURL, formatID string) (str
 	return videoFile, nil
 }
 
-// cleanVideoFiles очищает только файлы для конкретного видео
-func (s *YouTubeService) cleanVideoFiles(videoURL string) error {
+// findDownloadedFileOld ищет скачанный видео файл для конкретного URL (старая версия)
+func (s *YouTubeService) findDownloadedFileOld(videoURL string) (string, error) {
+	// Извлекаем ID видео из URL
+	videoID := extractVideoID(videoURL)
+	if videoID == "" {
+		return "", fmt.Errorf("не удалось извлечь ID видео из URL: %s", videoURL)
+	}
+
+	files, err := os.ReadDir(s.downloadDir)
+	if err != nil {
+		return "", fmt.Errorf("не удалось прочитать папку загрузок: %v", err)
+	}
+
+	// Ищем файл с конкретным ID видео
+	var videoFile string
+	for _, file := range files {
+		if !file.IsDir() && !strings.HasSuffix(file.Name(), ".webp") {
+			// Проверяем, что файл содержит ID видео
+			if strings.Contains(file.Name(), videoID) {
+				videoFile = filepath.Join(s.downloadDir, file.Name())
+				log.Printf("🎯 Найден файл для видео %s: %s", videoID, file.Name())
+				break
+			}
+		}
+	}
+
+	if videoFile == "" {
+		return "", fmt.Errorf("не найден скачанный видео файл для видео %s", videoID)
+	}
+
+	return videoFile, nil
+}
+
+// cleanVideoFiles очищает только файлы для конкретного видео и формата
+func (s *YouTubeService) cleanVideoFiles(videoURL, formatID string) error {
 	// Извлекаем ID видео из URL
 	videoID := extractVideoID(videoURL)
 	if videoID == "" {
@@ -641,15 +674,16 @@ func (s *YouTubeService) cleanVideoFiles(videoURL string) error {
 		return fmt.Errorf("не удалось прочитать папку загрузок: %v", err)
 	}
 
-	// Удаляем только файлы с этим ID видео
+	// Удаляем только файлы с этим ID видео и форматом
 	deletedCount := 0
+	expectedPattern := videoID + "_" + formatID
 	for _, file := range files {
-		if !file.IsDir() && strings.Contains(file.Name(), videoID) {
+		if !file.IsDir() && strings.Contains(file.Name(), expectedPattern) {
 			filePath := filepath.Join(s.downloadDir, file.Name())
 			if err := os.Remove(filePath); err != nil {
 				log.Printf("⚠️ Не удалось удалить файл %s: %v", filePath, err)
 			} else {
-				log.Printf("🗑️ Удален файл для видео %s: %s", videoID, filePath)
+				log.Printf("🗑️ Удален файл для видео %s (формат %s): %s", videoID, formatID, filePath)
 				deletedCount++
 			}
 		}
@@ -683,8 +717,8 @@ func extractVideoID(url string) string {
 	return ""
 }
 
-// findDownloadedFile ищет скачанный видео файл для конкретного URL
-func (s *YouTubeService) findDownloadedFile(videoURL string) (string, error) {
+// findDownloadedFile ищет скачанный видео файл для конкретного URL и формата
+func (s *YouTubeService) findDownloadedFile(videoURL, formatID string) (string, error) {
 	// Извлекаем ID видео из URL
 	videoID := extractVideoID(videoURL)
 	if videoID == "" {
@@ -696,14 +730,15 @@ func (s *YouTubeService) findDownloadedFile(videoURL string) (string, error) {
 		return "", fmt.Errorf("не удалось прочитать папку загрузок: %v", err)
 	}
 
-	// Ищем файл с конкретным ID видео
+	// Ищем файл с конкретным ID видео и форматом
 	var videoFile string
+	expectedPattern := videoID + "_" + formatID
 	for _, file := range files {
 		if !file.IsDir() && !strings.HasSuffix(file.Name(), ".webp") {
-			// Проверяем, что файл содержит ID видео
-			if strings.Contains(file.Name(), videoID) {
+			// Проверяем, что файл содержит ID видео и formatID
+			if strings.Contains(file.Name(), expectedPattern) {
 				videoFile = filepath.Join(s.downloadDir, file.Name())
-				log.Printf("🎯 Найден файл для видео %s: %s", videoID, file.Name())
+				log.Printf("🎯 Найден файл для видео %s (формат %s): %s", videoID, formatID, file.Name())
 				break
 			}
 		}
@@ -795,8 +830,8 @@ func (s *YouTubeService) DownloadVideoFast(url string) (string, error) {
 		if err == nil {
 			log.Printf("✅ %s выполнен успешно: %s", strategy.name, string(output))
 			
-			// Ищем скачанный файл для конкретного видео
-			videoFile, err := s.findDownloadedFile(url)
+			// Ищем скачанный файл для конкретного видео (без формата для старого метода)
+			videoFile, err := s.findDownloadedFileOld(url)
 			if err != nil {
 				continue // Пробуем следующую стратегию
 			}

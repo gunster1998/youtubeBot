@@ -13,7 +13,8 @@ import (
 // VideoCache представляет кэшированное видео
 type VideoCache struct {
 	ID           int64
-	VideoID      string    // YouTube Video ID
+	VideoID      string    // Video ID (любой платформы)
+	Platform     string    // Тип платформы (youtube, tiktok, instagram, etc.)
 	URL          string    // Полный URL
 	Title        string    // Название видео
 	DownloadCount int       // Количество скачиваний
@@ -67,10 +68,12 @@ func NewCacheService(cacheDir string, maxCacheSizeGB int) (*CacheService, error)
 
 // createCacheTable создает таблицу для кэша
 func createCacheTable(db *sql.DB) error {
-	query := `
+	// Сначала создаем таблицу если не существует
+	createQuery := `
 	CREATE TABLE IF NOT EXISTS video_cache (
 		id INTEGER PRIMARY KEY AUTOINCREMENT,
 		video_id TEXT NOT NULL,
+		platform TEXT NOT NULL DEFAULT 'youtube',
 		url TEXT NOT NULL,
 		title TEXT NOT NULL,
 		download_count INTEGER DEFAULT 1,
@@ -80,27 +83,93 @@ func createCacheTable(db *sql.DB) error {
 		format_id TEXT NOT NULL,
 		resolution TEXT NOT NULL,
 		created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
-		UNIQUE(video_id, format_id)
+		UNIQUE(video_id, platform, format_id)
 	);
-	
-	CREATE INDEX IF NOT EXISTS idx_video_id ON video_cache(video_id);
-	CREATE INDEX IF NOT EXISTS idx_format_id ON video_cache(format_id);
-	CREATE INDEX IF NOT EXISTS idx_download_count ON video_cache(download_count);
-	CREATE INDEX IF NOT EXISTS idx_last_download ON video_cache(last_download);
 	`
-
-	_, err := db.Exec(query)
-	return err
+	
+	_, err := db.Exec(createQuery)
+	if err != nil {
+		return err
+	}
+	
+	// Проверяем, существует ли колонка platform
+	var count int
+	checkQuery := `SELECT COUNT(*) FROM pragma_table_info('video_cache') WHERE name='platform'`
+	err = db.QueryRow(checkQuery).Scan(&count)
+	if err != nil {
+		return fmt.Errorf("ошибка проверки колонки platform: %v", err)
+	}
+	
+	// Если колонка platform не существует, добавляем её
+	if count == 0 {
+		log.Printf("🔄 Добавляю колонку platform в существующую таблицу...")
+		
+		// Добавляем колонку platform
+		alterQuery := `ALTER TABLE video_cache ADD COLUMN platform TEXT NOT NULL DEFAULT 'youtube'`
+		_, err = db.Exec(alterQuery)
+		if err != nil {
+			return fmt.Errorf("ошибка добавления колонки platform: %v", err)
+		}
+		
+		// Обновляем существующие записи
+		updateQuery := `UPDATE video_cache SET platform = 'youtube' WHERE platform IS NULL OR platform = ''`
+		_, err = db.Exec(updateQuery)
+		if err != nil {
+			return fmt.Errorf("ошибка обновления существующих записей: %v", err)
+		}
+		
+		log.Printf("✅ Колонка platform добавлена успешно")
+	}
+	
+	// Проверяем, существует ли UNIQUE constraint
+	var constraintCount int
+	constraintQuery := `SELECT COUNT(*) FROM sqlite_master WHERE type='index' AND name='idx_video_platform_format'`
+	err = db.QueryRow(constraintQuery).Scan(&constraintCount)
+	if err != nil {
+		log.Printf("⚠️ Предупреждение: не удалось проверить constraint: %v", err)
+	}
+	
+	// Если constraint не существует, создаем его
+	if constraintCount == 0 {
+		log.Printf("🔄 Добавляю UNIQUE constraint для (video_id, platform, format_id)...")
+		
+		// Создаем уникальный индекс
+		uniqueIndexQuery := `CREATE UNIQUE INDEX IF NOT EXISTS idx_video_platform_format ON video_cache(video_id, platform, format_id)`
+		_, err = db.Exec(uniqueIndexQuery)
+		if err != nil {
+			log.Printf("⚠️ Предупреждение: не удалось создать UNIQUE constraint: %v", err)
+		} else {
+			log.Printf("✅ UNIQUE constraint добавлен успешно")
+		}
+	}
+	
+	// Создаем индексы
+	indexQueries := []string{
+		`CREATE INDEX IF NOT EXISTS idx_video_id ON video_cache(video_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_platform ON video_cache(platform)`,
+		`CREATE INDEX IF NOT EXISTS idx_format_id ON video_cache(format_id)`,
+		`CREATE INDEX IF NOT EXISTS idx_download_count ON video_cache(download_count)`,
+		`CREATE INDEX IF NOT EXISTS idx_last_download ON video_cache(last_download)`,
+	}
+	
+	for _, indexQuery := range indexQueries {
+		_, err = db.Exec(indexQuery)
+		if err != nil {
+			log.Printf("⚠️ Предупреждение: не удалось создать индекс: %v", err)
+		}
+	}
+	
+	return nil
 }
 
 // IsVideoCached проверяет, есть ли видео в кэше
-func (cs *CacheService) IsVideoCached(videoID, formatID string) (bool, *VideoCache, error) {
-	query := `SELECT id, video_id, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at 
-			  FROM video_cache WHERE video_id = ? AND format_id = ?`
+func (cs *CacheService) IsVideoCached(videoID, platform, formatID string) (bool, *VideoCache, error) {
+	query := `SELECT id, video_id, platform, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at 
+			  FROM video_cache WHERE video_id = ? AND platform = ? AND format_id = ?`
 	
 	var cache VideoCache
-	err := cs.db.QueryRow(query, videoID, formatID).Scan(
-		&cache.ID, &cache.VideoID, &cache.URL, &cache.Title, &cache.DownloadCount,
+	err := cs.db.QueryRow(query, videoID, platform, formatID).Scan(
+		&cache.ID, &cache.VideoID, &cache.Platform, &cache.URL, &cache.Title, &cache.DownloadCount,
 		&cache.LastDownload, &cache.FileSize, &cache.FilePath, &cache.FormatID,
 		&cache.Resolution, &cache.CreatedAt,
 	)
@@ -123,41 +192,55 @@ func (cs *CacheService) IsVideoCached(videoID, formatID string) (bool, *VideoCac
 }
 
 // AddToCache добавляет видео в кэш
-func (cs *CacheService) AddToCache(videoID, url, title, formatID, resolution, filePath string, fileSize int64) error {
+func (cs *CacheService) AddToCache(videoID, platform, url, title, formatID, resolution, filePath string, fileSize int64) error {
 	// Проверяем размер кэша и очищаем если нужно
 	if err := cs.ensureCacheSize(fileSize); err != nil {
 		return fmt.Errorf("ошибка очистки кэша: %v", err)
 	}
 
-	// Добавляем или обновляем запись
-	query := `
-	INSERT OR REPLACE INTO video_cache 
-	(video_id, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at)
-	VALUES (?, ?, ?, 1, CURRENT_TIMESTAMP, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-	ON CONFLICT(video_id, format_id) DO UPDATE SET
-		url = excluded.url,
-		title = excluded.title,
-		file_size = excluded.file_size,
-		file_path = excluded.file_path,
-		resolution = excluded.resolution,
-		last_download = CURRENT_TIMESTAMP
-	`
-
-	_, err := cs.db.Exec(query, videoID, url, title, fileSize, filePath, formatID, resolution)
+	// Сначала проверяем, существует ли запись
+	existsQuery := `SELECT COUNT(*) FROM video_cache WHERE video_id = ? AND platform = ? AND format_id = ?`
+	var count int
+	err := cs.db.QueryRow(existsQuery, videoID, platform, formatID).Scan(&count)
 	if err != nil {
-		return fmt.Errorf("ошибка добавления в кэш: %v", err)
+		return fmt.Errorf("ошибка проверки существования записи: %v", err)
+	}
+	
+	if count > 0 {
+		// Обновляем существующую запись
+		updateQuery := `
+		UPDATE video_cache SET 
+			url = ?, title = ?, file_size = ?, file_path = ?, resolution = ?, 
+			last_download = CURRENT_TIMESTAMP, download_count = download_count + 1
+		WHERE video_id = ? AND platform = ? AND format_id = ?
+		`
+		_, err = cs.db.Exec(updateQuery, url, title, fileSize, filePath, resolution, videoID, platform, formatID)
+		if err != nil {
+			return fmt.Errorf("ошибка обновления записи в кэше: %v", err)
+		}
+	} else {
+		// Добавляем новую запись
+		insertQuery := `
+		INSERT INTO video_cache 
+		(video_id, platform, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at)
+		VALUES (?, ?, ?, ?, 1, CURRENT_TIMESTAMP, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+		`
+		_, err = cs.db.Exec(insertQuery, videoID, platform, url, title, fileSize, filePath, formatID, resolution)
+		if err != nil {
+			return fmt.Errorf("ошибка добавления записи в кэш: %v", err)
+		}
 	}
 
-	log.Printf("💾 Видео добавлено в кэш: %s (%s) - %s", videoID, resolution, formatID)
+	log.Printf("💾 Видео добавлено в кэш: %s (%s) - %s [%s]", videoID, resolution, formatID, platform)
 	return nil
 }
 
 // IncrementDownloadCount увеличивает счетчик скачиваний
-func (cs *CacheService) IncrementDownloadCount(videoID, formatID string) error {
+func (cs *CacheService) IncrementDownloadCount(videoID, platform, formatID string) error {
 	query := `UPDATE video_cache SET download_count = download_count + 1, last_download = CURRENT_TIMESTAMP 
-			  WHERE video_id = ? AND format_id = ?`
+			  WHERE video_id = ? AND platform = ? AND format_id = ?`
 	
-	_, err := cs.db.Exec(query, videoID, formatID)
+	_, err := cs.db.Exec(query, videoID, platform, formatID)
 	if err != nil {
 		return fmt.Errorf("ошибка обновления счетчика: %v", err)
 	}
@@ -167,7 +250,7 @@ func (cs *CacheService) IncrementDownloadCount(videoID, formatID string) error {
 
 // GetPopularVideos возвращает популярные видео (5+ скачиваний)
 func (cs *CacheService) GetPopularVideos() ([]VideoCache, error) {
-	query := `SELECT id, video_id, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at 
+	query := `SELECT id, video_id, platform, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at 
 			  FROM video_cache WHERE download_count >= 5 ORDER BY download_count DESC, last_download DESC`
 	
 	rows, err := cs.db.Query(query)
@@ -180,7 +263,7 @@ func (cs *CacheService) GetPopularVideos() ([]VideoCache, error) {
 	for rows.Next() {
 		var cache VideoCache
 		err := rows.Scan(
-			&cache.ID, &cache.VideoID, &cache.URL, &cache.Title, &cache.DownloadCount,
+			&cache.ID, &cache.VideoID, &cache.Platform, &cache.URL, &cache.Title, &cache.DownloadCount,
 			&cache.LastDownload, &cache.FileSize, &cache.FilePath, &cache.FormatID,
 			&cache.Resolution, &cache.CreatedAt,
 		)

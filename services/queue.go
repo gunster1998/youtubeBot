@@ -219,12 +219,14 @@ func (q *DownloadQueue) processJob(workerID int, job *DownloadJob) {
 	// Проверяем кэш
 	videoID := extractVideoID(job.VideoURL)
 	if videoID != "" {
-		if isCached, cachedVideo, err := q.cacheService.IsVideoCached(videoID, job.FormatID); err == nil && isCached {
+		// Определяем платформу для кэша (по умолчанию YouTube)
+		platform := "youtube"
+		if isCached, cachedVideo, err := q.cacheService.IsVideoCached(videoID, platform, job.FormatID); err == nil && isCached {
 			// Видео в кэше - отправляем результат
 			log.Printf("⚡ Задача %s: видео найдено в кэше", job.ID)
 			
 			// Увеличиваем счетчик скачиваний
-			q.cacheService.IncrementDownloadCount(videoID, job.FormatID)
+			q.cacheService.IncrementDownloadCount(videoID, platform, job.FormatID)
 			
 			// Отправляем результат в канал
 			select {
@@ -269,7 +271,7 @@ func (q *DownloadQueue) processJob(workerID int, job *DownloadJob) {
 			}
 			
 			// Добавляем в кэш
-			if err := q.cacheService.AddToCache(videoID, job.VideoURL, "YouTube Video", job.FormatID, resolution, videoPath, fileInfo.Size()); err != nil {
+			if err := q.cacheService.AddToCache(videoID, "youtube", job.VideoURL, "YouTube Video", job.FormatID, resolution, videoPath, fileInfo.Size()); err != nil {
 				log.Printf("⚠️ Задача %s: не удалось добавить в кэш: %v", job.ID, err)
 			}
 		}
