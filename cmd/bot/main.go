@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -30,24 +32,41 @@ type LocalBot struct {
 	Client   *http.Client
 	Username string
 	FirstName string
-	// Кэш для хранения форматов по чатам
-	formatCache map[int64][]services.VideoFormat
-	// Кэш для хранения URL видео по чатам
-	videoURLCache map[int64]string
-	// Кэш для хранения информации о платформе по чатам
-	platformCache map[int64]string
-	// Сервис для работы с YouTube
-	youtubeService *services.YouTubeService
-	// Универсальный сервис для работы с разными платформами
-	universalService *services.UniversalService
-	// Сервис для кэширования популярных видео
-	cacheService *services.CacheService
-	// Защита от спама - время последнего запроса по чатам
+	
+	// Thread-safe кэши с мьютексами
+	formatCache    map[int64][]services.VideoFormat
+	formatMutex    sync.RWMutex
+	videoURLCache  map[int64]string
+	videoMutex     sync.RWMutex
+	platformCache  map[int64]string
+	platformMutex  sync.RWMutex
 	lastRequestTime map[int64]time.Time
+	requestMutex   sync.RWMutex
+	
+	// Worker pool для обработки запросов
+	workerPool     chan struct{}
+	downloadPool   chan struct{}
+	
+	// Rate limiting
+	rateLimiter    map[int64]*time.Timer
+	rateMutex      sync.RWMutex
+	
+	// Сервисы
+	youtubeService *services.YouTubeService
+	universalService *services.UniversalService
+	cacheService *services.CacheService
+	
 	// Метрики производительности
 	metrics *BotMetrics
+	metricsMutex sync.RWMutex
+	
 	// ID администраторов
 	adminIDs map[int64]bool
+	adminMutex sync.RWMutex
+	
+	// Контекст для graceful shutdown
+	ctx    context.Context
+	cancel context.CancelFunc
 }
 
 // BotMetrics содержит метрики производительности бота
@@ -64,30 +83,53 @@ type BotMetrics struct {
 
 // NewLocalBot создает новый экземпляр LocalBot
 func NewLocalBot(token, apiURL string, timeout time.Duration, youtubeService *services.YouTubeService, universalService *services.UniversalService, cacheService *services.CacheService) *LocalBot {
+	// Создаем контекст для graceful shutdown
+	ctx, cancel := context.WithCancel(context.Background())
+	
 	// Создаем карту администраторов
 	adminIDs := make(map[int64]bool)
 	adminIDs[6717533619] = true  // Первый администратор
 	adminIDs[234549643] = true   // Второй администратор
 	
-	return &LocalBot{
+	bot := &LocalBot{
 		Token:  token,
 		APIURL: apiURL,
 		Client: &http.Client{
 			Timeout: timeout,
 		},
-		formatCache: make(map[int64][]services.VideoFormat),
-		videoURLCache: make(map[int64]string),
-		platformCache: make(map[int64]string),
+		// Thread-safe кэши
+		formatCache:    make(map[int64][]services.VideoFormat),
+		videoURLCache:  make(map[int64]string),
+		platformCache:  make(map[int64]string),
+		lastRequestTime: make(map[int64]time.Time),
+		rateLimiter:    make(map[int64]*time.Timer),
+		
+		// Worker pools (максимум 50 одновременных запросов, 10 загрузок)
+		workerPool:   make(chan struct{}, 50),
+		downloadPool: make(chan struct{}, 10),
+		
+		// Сервисы
 		youtubeService: youtubeService,
 		universalService: universalService,
 		cacheService: cacheService,
-		lastRequestTime: make(map[int64]time.Time),
+		
+		// Метрики
 		metrics: &BotMetrics{
 			StartTime: time.Now(),
 			LastActivity: time.Now(),
 		},
 		adminIDs: adminIDs,
+		ctx:    ctx,
+		cancel: cancel,
 	}
+	
+	// Запускаем очистку кэшей каждые 5 минут
+	go bot.startCacheCleanup()
+	
+	// Запускаем мониторинг производительности
+	go bot.startMetricsMonitoring()
+	
+	return bot
 }
 
 // GetMe получает информацию о боте
@@ -126,6 +168,267 @@ func (b *LocalBot) GetMe() error {
 	b.Username = result.Result.Username
 	b.FirstName = result.Result.FirstName
 	return nil
+}
+
+// Thread-safe методы для работы с кэшами
+
+// setFormatCache thread-safe установка форматов
+func (b *LocalBot) setFormatCache(chatID int64, formats []services.VideoFormat) {
+	b.formatMutex.Lock()
+	defer b.formatMutex.Unlock()
+	b.formatCache[chatID] = formats
+}
+
+// getFormatCache thread-safe получение форматов
+func (b *LocalBot) getFormatCache(chatID int64) ([]services.VideoFormat, bool) {
+	b.formatMutex.RLock()
+	defer b.formatMutex.RUnlock()
+	formats, exists := b.formatCache[chatID]
+	return formats, exists
+}
+
+// setVideoURLCache thread-safe установка URL видео
+func (b *LocalBot) setVideoURLCache(chatID int64, url string) {
+	b.videoMutex.Lock()
+	defer b.videoMutex.Unlock()
+	b.videoURLCache[chatID] = url
+}
+
+// getVideoURLCache thread-safe получение URL видео
+func (b *LocalBot) getVideoURLCache(chatID int64) (string, bool) {
+	b.videoMutex.RLock()
+	defer b.videoMutex.RUnlock()
+	url, exists := b.videoURLCache[chatID]
+	return url, exists
+}
+
+// setPlatformCache thread-safe установка платформы
+func (b *LocalBot) setPlatformCache(chatID int64, platform string) {
+	b.platformMutex.Lock()
+	defer b.platformMutex.Unlock()
+	b.platformCache[chatID] = platform
+}
+
+// getPlatformCache thread-safe получение платформы
+func (b *LocalBot) getPlatformCache(chatID int64) (string, bool) {
+	b.platformMutex.RLock()
+	defer b.platformMutex.RUnlock()
+	platform, exists := b.platformCache[chatID]
+	return platform, exists
+}
+
+// setLastRequestTime thread-safe установка времени последнего запроса
+func (b *LocalBot) setLastRequestTime(chatID int64, t time.Time) {
+	b.requestMutex.Lock()
+	defer b.requestMutex.Unlock()
+	b.lastRequestTime[chatID] = t
+}
+
+// getLastRequestTime thread-safe получение времени последнего запроса
+func (b *LocalBot) getLastRequestTime(chatID int64) (time.Time, bool) {
+	b.requestMutex.RLock()
+	defer b.requestMutex.RUnlock()
+	t, exists := b.lastRequestTime[chatID]
+	return t, exists
+}
+
+// clearCacheForChat thread-safe очистка кэша для чата
+func (b *LocalBot) clearCacheForChat(chatID int64) {
+	b.formatMutex.Lock()
+	delete(b.formatCache, chatID)
+	b.formatMutex.Unlock()
+	
+	b.videoMutex.Lock()
+	delete(b.videoURLCache, chatID)
+	b.videoMutex.Unlock()
+	
+	b.platformMutex.Lock()
+	delete(b.platformCache, chatID)
+	b.platformMutex.Unlock()
+	
+	b.requestMutex.Lock()
+	delete(b.lastRequestTime, chatID)
+	b.requestMutex.Unlock()
+}
+
+// Rate limiting методы
+
+// isRateLimited проверяет, не превышен ли лимит запросов
+func (b *LocalBot) isRateLimited(chatID int64) bool {
+	b.rateMutex.RLock()
+	defer b.rateMutex.RUnlock()
+	
+	if lastTime, exists := b.getLastRequestTime(chatID); exists {
+		return time.Since(lastTime) < 5*time.Second // 5 секунд между запросами
+	}
+	return false
+}
+
+// setRateLimit устанавливает rate limit для пользователя
+func (b *LocalBot) setRateLimit(chatID int64) {
+	b.rateMutex.Lock()
+	defer b.rateMutex.Unlock()
+	
+	// Отменяем предыдущий таймер если есть
+	if timer, exists := b.rateLimiter[chatID]; exists {
+		timer.Stop()
+	}
+	
+	// Устанавливаем новый таймер
+	b.rateLimiter[chatID] = time.AfterFunc(5*time.Second, func() {
+		b.rateMutex.Lock()
+		delete(b.rateLimiter, chatID)
+		b.rateMutex.Unlock()
+	})
+}
+
+// Worker pool методы
+
+// acquireWorker получает worker из pool
+func (b *LocalBot) acquireWorker() {
+	select {
+	case b.workerPool <- struct{}{}:
+		// Worker получен
+	case <-b.ctx.Done():
+		// Контекст отменен
+		return
+	}
+}
+
+// releaseWorker освобождает worker
+func (b *LocalBot) releaseWorker() {
+	select {
+	case <-b.workerPool:
+		// Worker освобожден
+	default:
+		// Не должно происходить
+	}
+}
+
+// acquireDownload получает download slot
+func (b *LocalBot) acquireDownload() {
+	select {
+	case b.downloadPool <- struct{}{}:
+		// Download slot получен
+	case <-b.ctx.Done():
+		// Контекст отменен
+		return
+	}
+}
+
+// releaseDownload освобождает download slot
+func (b *LocalBot) releaseDownload() {
+	select {
+	case <-b.downloadPool:
+		// Download slot освобожден
+	default:
+		// Не должно происходить
+	}
+}
+
+// Метрики
+
+// updateMetrics thread-safe обновление метрик
+func (b *LocalBot) updateMetrics(requests, successful, failed, downloads, errors int64, responseTime time.Duration) {
+	b.metricsMutex.Lock()
+	defer b.metricsMutex.Unlock()
+	
+	b.metrics.TotalRequests += requests
+	b.metrics.SuccessfulRequests += successful
+	b.metrics.FailedRequests += failed
+	b.metrics.TotalDownloads += downloads
+	b.metrics.TotalErrors += errors
+	b.metrics.LastActivity = time.Now()
+	
+	// Обновляем среднее время ответа
+	if b.metrics.TotalRequests > 0 {
+		totalTime := b.metrics.AverageResponseTime * time.Duration(b.metrics.TotalRequests-1)
+		b.metrics.AverageResponseTime = (totalTime + responseTime) / time.Duration(b.metrics.TotalRequests)
+	} else {
+		b.metrics.AverageResponseTime = responseTime
+	}
+}
+
+// getMetrics thread-safe получение метрик
+func (b *LocalBot) getMetrics() BotMetrics {
+	b.metricsMutex.RLock()
+	defer b.metricsMutex.RUnlock()
+	return *b.metrics
+}
+
+// Очистка кэшей
+
+// startCacheCleanup запускает периодическую очистку кэшей
+func (b *LocalBot) startCacheCleanup() {
+	ticker := time.NewTicker(5 * time.Minute)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-ticker.C:
+			b.cleanupOldCache()
+		case <-b.ctx.Done():
+			return
+		}
+	}
+}
+
+// cleanupOldCache очищает старые записи из кэшей
+func (b *LocalBot) cleanupOldCache() {
+	now := time.Now()
+	cutoff := now.Add(-30 * time.Minute) // Удаляем записи старше 30 минут
+	
+	// Очищаем formatCache
+	b.formatMutex.Lock()
+	for chatID, lastTime := range b.lastRequestTime {
+		if lastTime.Before(cutoff) {
+			delete(b.formatCache, chatID)
+			delete(b.videoURLCache, chatID)
+			delete(b.platformCache, chatID)
+			delete(b.lastRequestTime, chatID)
+		}
+	}
+	b.formatMutex.Unlock()
+	
+	log.Printf("🧹 Очистка кэшей завершена")
+}
+
+// startMetricsMonitoring запускает мониторинг производительности
+func (b *LocalBot) startMetricsMonitoring() {
+	ticker := time.NewTicker(1 * time.Minute)
+	defer ticker.Stop()
+	
+	for {
+		select {
+		case <-ticker.C:
+			metrics := b.getMetrics()
+			uptime := time.Since(metrics.StartTime)
+			
+			log.Printf("📊 МЕТРИКИ: Uptime=%v, Requests=%d, Downloads=%d, Errors=%d, AvgResponse=%v",
+				uptime, metrics.TotalRequests, metrics.TotalDownloads, metrics.TotalErrors, metrics.AverageResponseTime)
+		case <-b.ctx.Done():
+			return
+		}
+	}
+}
+
+// Graceful shutdown
+
+// Shutdown gracefully останавливает бота
+func (b *LocalBot) Shutdown() {
+	log.Printf("🛑 Начинаю graceful shutdown...")
+	b.cancel()
+	
+	// Ждем завершения всех worker'ов
+	for i := 0; i < cap(b.workerPool); i++ {
+		b.workerPool <- struct{}{}
+	}
+	
+	for i := 0; i < cap(b.downloadPool); i++ {
+		b.downloadPool <- struct{}{}
+	}
+	
+	log.Printf("✅ Graceful shutdown завершен")
 }
 
 // SendMessage отправляет сообщение
@@ -938,10 +1241,17 @@ func main() {
 	gracefulShutdown := func() {
 		log.Println("🛑 Получен сигнал завершения, сохраняю состояние...")
 		
+		// Останавливаем бота gracefully
+		bot.Shutdown()
+		
 		// Сохраняем статистику
+		metrics := bot.getMetrics()
 		log.Printf("📊 Статистика работы:")
-		log.Printf("   - Активных чатов: %d", len(bot.formatCache))
-		log.Printf("   - Кэшированных URL: %d", len(bot.videoURLCache))
+		log.Printf("   - Всего запросов: %d", metrics.TotalRequests)
+		log.Printf("   - Успешных: %d", metrics.SuccessfulRequests)
+		log.Printf("   - Ошибок: %d", metrics.TotalErrors)
+		log.Printf("   - Скачиваний: %d", metrics.TotalDownloads)
+		log.Printf("   - Среднее время ответа: %v", metrics.AverageResponseTime)
 		
 		// Закрываем кэш-сервис
 		if bot.cacheService != nil {
@@ -988,6 +1298,19 @@ func main() {
 					message := update.Message
 					log.Printf("📨 Получено сообщение: %s от чата %d", 
 						message.Text, message.Chat.ID)
+					
+					// Проверяем rate limiting
+					if bot.isRateLimited(message.Chat.ID) {
+						bot.SendMessage(message.Chat.ID, "⏳ Слишком много запросов! Подождите 5 секунд.")
+						continue
+					}
+					
+					// Устанавливаем rate limit
+					bot.setRateLimit(message.Chat.ID)
+					bot.setLastRequestTime(message.Chat.ID, time.Now())
+					
+					// Обновляем метрики
+					bot.updateMetrics(1, 0, 0, 0, 0, 0)
 					
 					// Обрабатываем команды
 					if message.Text == "/start" {
@@ -1217,24 +1540,18 @@ func main() {
 							continue
 						}
 						
-						// Защита от спама - проверяем время последнего запроса
-						if lastTime, exists := bot.lastRequestTime[message.Chat.ID]; exists {
-							if time.Since(lastTime) < 10*time.Second {
-								bot.SendMessage(message.Chat.ID, "⏳ Пожалуйста, подождите 10 секунд между запросами")
-								continue
-							}
-						}
+						// Защита от спама уже проверена выше в основном цикле
 						
-						// Обновляем время последнего запроса
-						bot.lastRequestTime[message.Chat.ID] = time.Now()
-						
+						// Запускаем обработку в worker pool
 						go func(url string, chatID int64, platform services.PlatformInfo) {
+							// Получаем worker из pool
+							bot.acquireWorker()
+							defer bot.releaseWorker()
+							
 							startTime := time.Now()
 							
-							// Очищаем старый кэш для этого чата ВНУТРИ горутины
-							delete(bot.formatCache, chatID)
-							delete(bot.videoURLCache, chatID)
-							delete(bot.platformCache, chatID)
+							// Очищаем старый кэш для этого чата thread-safe
+							bot.clearCacheForChat(chatID)
 							log.Printf("🗑️ Очистил старый кэш для чата %d", chatID)
 							
 							// Очистка истории отключена - не удаляем сообщения пользователя
@@ -1331,14 +1648,13 @@ func main() {
 							}
 							
 							// Проверяем, что URL в кэше соответствует текущему запросу
-							cachedURL := bot.videoURLCache[chatID]
-							if cachedURL != "" && cachedURL != url {
+							cachedURL, exists := bot.getVideoURLCache(chatID)
+							if exists && cachedURL != "" && cachedURL != url {
 								log.Printf("⚠️ ВНИМАНИЕ: URL в кэше не соответствует текущему запросу!")
 								log.Printf("  Кэш: %s", cachedURL)
 								log.Printf("  Текущий: %s", url)
 								// Очищаем кэш и сохраняем новый URL
-								delete(bot.formatCache, chatID)
-								delete(bot.videoURLCache, chatID)
+								bot.clearCacheForChat(chatID)
 								log.Printf("🗑️ Принудительно очистил кэш из-за несоответствия URL")
 							}
 							
@@ -1355,10 +1671,10 @@ func main() {
 								return
 							}
 							
-							// Сохраняем форматы, URL и платформу в кэше для этого чата
-							bot.formatCache[chatID] = formats
-							bot.videoURLCache[chatID] = url
-							bot.platformCache[chatID] = string(platform.Type)
+							// Сохраняем форматы, URL и платформу в кэше для этого чата thread-safe
+							bot.setFormatCache(chatID, formats)
+							bot.setVideoURLCache(chatID, url)
+							bot.setPlatformCache(chatID, string(platform.Type))
 							log.Printf("💾 Сохранил в кэш: %d форматов, URL: %s, платформа: %s для чата %d", len(formats), url, platform.Type, chatID)
 							
 							// Разделяем форматы на аудио и видео
@@ -1512,7 +1828,11 @@ func main() {
 						bot.AnswerCallbackQuery(callback.ID)
 						
 						// Показываем список аудио форматов
-						formats := bot.formatCache[callback.Message.Chat.ID]
+						formats, exists := bot.getFormatCache(callback.Message.Chat.ID)
+						if !exists {
+							bot.SendMessage(callback.Message.Chat.ID, "❌ Форматы не найдены. Отправьте ссылку заново.")
+							continue
+						}
 						var audioFormats []services.VideoFormat
 						for _, format := range formats {
 							if format.Extension == "audio" {
@@ -1535,7 +1855,11 @@ func main() {
 						bot.AnswerCallbackQuery(callback.ID)
 						
 						// Получаем форматы из кэша и применяем умную группировку
-						formats := bot.formatCache[callback.Message.Chat.ID]
+						formats, exists := bot.getFormatCache(callback.Message.Chat.ID)
+						if !exists {
+							bot.SendMessage(callback.Message.Chat.ID, "❌ Форматы не найдены. Отправьте ссылку заново.")
+							continue
+						}
 						log.Printf("🔍 Применяю умную группировку для %d форматов", len(formats))
 						
 						// Группируем видео форматы по разрешению
@@ -1609,14 +1933,18 @@ func main() {
 							bot.AnswerCallbackQuery(callback.ID)
 							bot.SendMessage(callback.Message.Chat.ID, fmt.Sprintf("⏳ Скачиваю видео в формате %s...", formatID))
 							
-							// Запускаем загрузку в отдельной горутине
+							// Запускаем загрузку в отдельной горутине с download pool
 							go func() {
+								// Получаем download slot
+								bot.acquireDownload()
+								defer bot.releaseDownload()
+								
 								startTime := time.Now()
 								log.Printf("🚀 Начинаю загрузку видео в формате %s", formatID)
 								
 								// Получаем URL видео из кэша
-							videoURL := bot.videoURLCache[callback.Message.Chat.ID]
-							if videoURL == "" {
+							videoURL, exists := bot.getVideoURLCache(callback.Message.Chat.ID)
+							if !exists || videoURL == "" {
 								log.Printf("❌ URL видео не найден в кэше для чата %d", callback.Message.Chat.ID)
 								bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка: URL видео не найден. Отправьте ссылку заново.")
 								return
@@ -1738,7 +2066,7 @@ func main() {
 									if metadata != nil {
 										// Находим разрешение выбранного формата из кэша
 										var resolution string
-										if cachedFormats, exists := bot.formatCache[callback.Message.Chat.ID]; exists {
+										if cachedFormats, exists := bot.getFormatCache(callback.Message.Chat.ID); exists {
 											for _, format := range cachedFormats {
 												if format.ID == formatID {
 													resolution = format.Resolution
@@ -1802,12 +2130,14 @@ func main() {
 											log.Printf("⚠️ Не удалось получить информацию о файле: %v", err)
 										} else {
 											// Находим формат для получения разрешения
-											formats := bot.formatCache[callback.Message.Chat.ID]
+											formats, exists := bot.getFormatCache(callback.Message.Chat.ID)
 											var resolution string
-											for _, f := range formats {
-												if f.ID == formatID {
-													resolution = f.Resolution
-													break
+											if exists {
+												for _, f := range formats {
+													if f.ID == formatID {
+														resolution = f.Resolution
+														break
+													}
 												}
 											}
 											
@@ -2029,10 +2359,7 @@ func CleanupCache(bot *LocalBot) {
 	clearedChats := 0
 	for chatID, lastTime := range bot.lastRequestTime {
 		if time.Since(lastTime) > 24*time.Hour {
-			delete(bot.formatCache, chatID)
-			delete(bot.videoURLCache, chatID)
-			delete(bot.platformCache, chatID)
-			delete(bot.lastRequestTime, chatID)
+			bot.clearCacheForChat(chatID)
 			clearedChats++
 		}
 	}
