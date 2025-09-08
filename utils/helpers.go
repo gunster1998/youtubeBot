@@ -1,7 +1,9 @@
 package utils
 
 import (
+	"log"
 	"strings"
+	"time"
 )
 
 // ExtractVideoID извлекает ID видео из YouTube URL
@@ -41,4 +43,32 @@ func SanitizeFilename(filename string) string {
 	}
 	
 	return result
+}
+
+// RetryWithBackoff выполняет функцию с повторными попытками и экспоненциальной задержкой
+func RetryWithBackoff(operation func() error, maxRetries int, baseDelay time.Duration) error {
+	var lastErr error
+	
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		if attempt > 0 {
+			// Экспоненциальная задержка: 1s, 2s, 4s, 8s, 16s
+			delay := baseDelay * time.Duration(1<<uint(attempt-1))
+			log.Printf("🔄 Попытка %d/%d через %v...", attempt+1, maxRetries+1, delay)
+			time.Sleep(delay)
+		}
+		
+		err := operation()
+		if err == nil {
+			if attempt > 0 {
+				log.Printf("✅ Операция успешна после %d попыток", attempt+1)
+			}
+			return nil
+		}
+		
+		lastErr = err
+		log.Printf("❌ Попытка %d/%d неудачна: %v", attempt+1, maxRetries+1, err)
+	}
+	
+	log.Printf("💥 Все %d попыток исчерпаны", maxRetries+1)
+	return lastErr
 }

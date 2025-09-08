@@ -11,6 +11,8 @@ import (
 	"strings"
 	"time"
 	"strconv"
+	
+	"youtubeBot/utils"
 )
 
 // VideoFormat представляет формат видео
@@ -87,47 +89,74 @@ func (s *YouTubeService) GetVideoFormats(url string) ([]VideoFormat, error) {
 	log.Printf("🔍 Получение форматов для: %s", url)
 	log.Printf("🚀 Запуск yt-dlp для анализа видео...")
 
-	// Используем --list-formats для получения списка форматов
-	ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
-	defer cancel()
-
-	log.Printf("⏱️ Таймаут установлен на 120 секунд")
-
-	// Получаем аргументы прокси
-	proxyArgs := getProxyArgs()
+	var formats []VideoFormat
+	var lastErr error
 	
-	// Формируем команду с прокси (упрощаем для получения всех форматов)
-	args := []string{
-		"--list-formats",
-		"--no-playlist",
-		"--no-check-certificates",
-		"--no-warnings",
-		// Убираем --quiet для лучшего вывода
-		// Убираем --extractor-args для получения всех форматов
-	}
-	
-	// Добавляем аргументы прокси
-	args = append(args, proxyArgs...)
-	args = append(args, url)
-	
-	cmd := exec.CommandContext(ctx, getYtDlpPath(), args...)
+	// Используем retry механизм для получения форматов
+	err := utils.RetryWithBackoff(func() error {
+		// Используем --list-formats для получения списка форматов
+		ctx, cancel := context.WithTimeout(context.Background(), 120*time.Second)
+		defer cancel()
 
-	output, err := cmd.CombinedOutput()
-	if err != nil {
-		if ctx.Err() == context.DeadlineExceeded {
-			return nil, fmt.Errorf("таймаут получения форматов (120 сек) - видео слишком большое или медленный интернет")
+		log.Printf("⏱️ Таймаут установлен на 120 секунд")
+
+		// Получаем аргументы прокси
+		proxyArgs := getProxyArgs()
+		
+		// Формируем команду с прокси (упрощаем для получения всех форматов)
+		args := []string{
+			"--list-formats",
+			"--no-playlist",
+			"--no-check-certificates",
+			"--no-warnings",
+			// Убираем --quiet для лучшего вывода
+			// Убираем --extractor-args для получения всех форматов
 		}
-		log.Printf("❌ yt-dlp ошибка: %v", err)
-		log.Printf("📋 Вывод yt-dlp: %s", string(output))
-		return nil, fmt.Errorf("ошибка yt-dlp: %v", err)
+		
+		// Добавляем аргументы прокси
+		args = append(args, proxyArgs...)
+		args = append(args, url)
+		
+		cmd := exec.CommandContext(ctx, getYtDlpPath(), args...)
+
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			if ctx.Err() == context.DeadlineExceeded {
+				return fmt.Errorf("таймаут получения форматов (120 сек) - видео слишком большое или медленный интернет")
+			}
+			log.Printf("❌ yt-dlp ошибка: %v", err)
+			log.Printf("📋 Вывод yt-dlp: %s", string(output))
+			return fmt.Errorf("ошибка yt-dlp: %v", err)
+		}
+		
+		// Парсим результат
+		parsedFormats, parseErr := s.parseVideoFormats(string(output))
+		if parseErr != nil {
+			return parseErr
+		}
+		
+		formats = parsedFormats
+		return nil
+	}, 3, 2*time.Second) // 3 попытки с базовой задержкой 2 секунды
+	
+	if err != nil {
+		lastErr = err
+		log.Printf("💥 Не удалось получить форматы после всех попыток: %v", err)
+		return nil, lastErr
 	}
 
-	log.Printf("📋 Получен вывод yt-dlp")
-	log.Printf("🔍 Сырой вывод yt-dlp:\n%s", string(output))
+	log.Printf("📊 Найдено %d форматов, %d совместимых с Telegram", len(formats), len(s.filterTelegramCompatibleFormats(formats)))
+	return s.filterTelegramCompatibleFormats(formats), nil
+}
+
+// parseVideoFormats парсит вывод yt-dlp и возвращает список форматов
+func (s *YouTubeService) parseVideoFormats(output string) ([]VideoFormat, error) {
+	log.Printf("📋 Парсинг вывода yt-dlp")
+	log.Printf("🔍 Сырой вывод yt-dlp:\n%s", output)
 
 	// Парсим вывод yt-dlp
 	var allFormats []VideoFormat
-	lines := strings.Split(string(output), "\n")
+	lines := strings.Split(output, "\n")
 
 	log.Printf("📊 Всего строк в выводе: %d", len(lines))
 	
@@ -541,43 +570,58 @@ func (s *YouTubeService) DownloadVideoWithFormat(videoURL, formatID string) (str
 
 	log.Printf("💾 Скачивание видео %s в формате %s + аудио", videoURL, formatID)
 
-	// Получаем аргументы прокси
-	proxyArgs := getProxyArgs()
+	var videoFile string
+	var lastErr error
 	
-	// Команда yt-dlp для скачивания видео + аудио (поддержка до 2GB)
-	args := []string{
-		"--format", formatID + "+bestaudio/best", // Скачиваем видео + лучшее аудио
-		"--output", filepath.Join(s.downloadDir, "%(id)s.%(ext)s"),
-		"--no-playlist",
-		"--no-check-certificates",
-		"--max-filesize", "2G",    // Максимальный размер файла 2GB
-		"--socket-timeout", "60",  // Увеличенный таймаут для больших файлов
-		"--retries", "5",          // Больше попыток для больших файлов
-		"--force-overwrites",      // Принудительно перезаписываем существующие файлы
-		"--merge-output-format", "mp4", // Объединяем в MP4 с аудио
-	}
-	
-	// Добавляем аргументы прокси
-	args = append(args, proxyArgs...)
-	args = append(args, videoURL)
-	
-	cmd := exec.Command(getYtDlpPath(), args...)
+	// Используем retry механизм для скачивания
+	err := utils.RetryWithBackoff(func() error {
+		// Получаем аргументы прокси
+		proxyArgs := getProxyArgs()
+		
+		// Команда yt-dlp для скачивания видео + аудио (поддержка до 2GB)
+		args := []string{
+			"--format", formatID + "+bestaudio/best", // Скачиваем видео + лучшее аудио
+			"--output", filepath.Join(s.downloadDir, "%(id)s.%(ext)s"),
+			"--no-playlist",
+			"--no-check-certificates",
+			"--max-filesize", "2G",    // Максимальный размер файла 2GB
+			"--socket-timeout", "60",  // Увеличенный таймаут для больших файлов
+			"--retries", "5",          // Больше попыток для больших файлов
+			"--force-overwrites",      // Принудительно перезаписываем существующие файлы
+			"--merge-output-format", "mp4", // Объединяем в MP4 с аудио
+		}
+		
+		// Добавляем аргументы прокси
+		args = append(args, proxyArgs...)
+		args = append(args, videoURL)
+		
+		cmd := exec.Command(getYtDlpPath(), args...)
 
-	log.Printf("🚀 Выполняю команду: %s", strings.Join(cmd.Args, " "))
+		log.Printf("🚀 Выполняю команду: %s", strings.Join(cmd.Args, " "))
 
-	// Запускаем команду
-	output, err := cmd.CombinedOutput()
+		// Запускаем команду
+		output, err := cmd.CombinedOutput()
+		if err != nil {
+			log.Printf("❌ Ошибка yt-dlp: %s", string(output))
+			return fmt.Errorf("ошибка yt-dlp: %v", err)
+		}
+
+		log.Printf("✅ yt-dlp выполнен успешно: %s", string(output))
+
+		// Ищем скачанный файл для конкретного видео
+		foundFile, findErr := s.findDownloadedFile(videoURL)
+		if findErr != nil {
+			return findErr
+		}
+		
+		videoFile = foundFile
+		return nil
+	}, 2, 5*time.Second) // 2 попытки с базовой задержкой 5 секунд
+	
 	if err != nil {
-		log.Printf("❌ Ошибка yt-dlp: %s", string(output))
-		return "", fmt.Errorf("ошибка yt-dlp: %v", err)
-	}
-
-	log.Printf("✅ yt-dlp выполнен успешно: %s", string(output))
-
-	// Ищем скачанный файл для конкретного видео
-	videoFile, err := s.findDownloadedFile(videoURL)
-	if err != nil {
-		return "", err
+		lastErr = err
+		log.Printf("💥 Не удалось скачать видео после всех попыток: %v", err)
+		return "", lastErr
 	}
 
 	return videoFile, nil

@@ -653,6 +653,7 @@ func main() {
 	log.Printf("🔄 Запуск цикла getUpdates...")
 	
 	offset := int64(0)
+	lastCleanup := time.Now()
 	for {
 		select {
 		case <-sigChan:
@@ -660,6 +661,12 @@ func main() {
 			fmt.Printf("\n🛑 Получен сигнал завершения, завершаю работу...\n")
 			return
 		default:
+			// Периодическая очистка кэша (каждые 6 часов)
+			if time.Since(lastCleanup) > 6*time.Hour {
+				CleanupCache(bot)
+				lastCleanup = time.Now()
+			}
+			
 			// Получаем обновления
 			updates, err := bot.GetUpdates(int(offset), 100, 30)
 			if err != nil {
@@ -713,18 +720,29 @@ func main() {
 • https://youtu.be/VIDEO_ID`
 						bot.SendMessage(message.Chat.ID, helpText)
 					} else if message.Text == "/status" {
-						statusText := `🤖 Статус бота: ✅ Работает
+						// Получаем состояние всех сервисов
+						health := HealthCheck(youtubeService, cacheService)
+						
+						statusText := fmt.Sprintf(`🤖 Статус бота: ✅ Работает
 
-📊 Информация:
-• Сервер: Активен
-• yt-dlp: Доступен
-• Прокси: Настроен
-• Кэш: Работает
+🔧 Компоненты:
+🎬 YouTube сервис: %s
+🌐 Сетевое подключение: %s
+💾 Кэш-сервис: %s
+📱 Telegram API: %s
+🛠️ yt-dlp: %s
 
-🔄 Последняя активность: Только что
+📊 Статистика:
+🔄 Активных чатов: %d
+💾 Кэшированных URL: %d
 ⏰ Время работы: Постоянно
 
-💡 Если что-то не работает, попробуйте команду /help`
+🔄 Последняя активность: Только что
+
+💡 Если что-то не работает, попробуйте команду /help`,
+							health["youtube"], health["network"], health["cache"], 
+							health["telegram"], health["yt-dlp"],
+							len(bot.formatCache), len(bot.videoURLCache))
 						bot.SendMessage(message.Chat.ID, statusText)
 					} else if message.Text == "/stats" {
 						statsText := fmt.Sprintf(`📊 Статистика бота
@@ -787,14 +805,25 @@ func main() {
 								
 								// Улучшенные сообщения об ошибках для пользователя
 								var userMessage string
-								if strings.Contains(err.Error(), "not made this video available in your country") {
+								switch {
+								case strings.Contains(err.Error(), "not made this video available in your country"):
 									userMessage = "❌ Видео недоступно в вашем регионе\n\n💡 Попробуйте:\n• Другое видео\n• VPN с другой страной\n• Видео, доступное в России"
-								} else if strings.Contains(err.Error(), "Video unavailable") {
+								case strings.Contains(err.Error(), "Video unavailable"):
 									userMessage = "❌ Видео недоступно\n\n💡 Возможные причины:\n• Видео удалено\n• Приватное видео\n• Ограничения автора"
-								} else if strings.Contains(err.Error(), "timeout") {
+								case strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "таймаут"):
 									userMessage = "⏱️ Превышено время ожидания\n\n💡 Попробуйте:\n• Проверить интернет\n• Попробовать позже\n• Другое видео"
-								} else {
-									userMessage = fmt.Sprintf("❌ Ошибка получения видео\n\n🔧 Техническая информация:\n%s\n\n💡 Попробуйте другое видео", err.Error())
+								case strings.Contains(err.Error(), "SSL") || strings.Contains(err.Error(), "handshake"):
+									userMessage = "🔒 Проблемы с SSL соединением\n\n💡 Попробуйте:\n• Проверить интернет\n• Использовать VPN\n• Другое видео"
+								case strings.Contains(err.Error(), "Sign in to confirm your age"):
+									userMessage = "🔞 Видео содержит контент для взрослых\n\n💡 Попробуйте другое видео"
+								case strings.Contains(err.Error(), "Private video"):
+									userMessage = "🔒 Приватное видео\n\n💡 Попробуйте публичное видео"
+								case strings.Contains(err.Error(), "Live stream"):
+									userMessage = "📺 Прямая трансляция\n\n💡 Попробуйте записанное видео"
+								case strings.Contains(err.Error(), "No video formats found"):
+									userMessage = "📹 Форматы видео не найдены\n\n💡 Попробуйте:\n• Другое видео\n• Проверить ссылку\n• Попробовать позже"
+								default:
+									userMessage = fmt.Sprintf("❌ Ошибка получения видео\n\n🔧 Техническая информация:\n%s\n\n💡 Попробуйте:\n• Другое видео\n• Проверить ссылку\n• Попробовать позже", err.Error())
 								}
 								
 								bot.SendMessage(message.Chat.ID, userMessage)
@@ -1337,4 +1366,58 @@ func isValidYouTubeURL(url string) bool {
 	}
 	
 	return false
+}
+
+// HealthCheck проверяет состояние всех сервисов
+func HealthCheck(youtubeService *services.YouTubeService, cacheService *services.CacheService) map[string]string {
+	health := make(map[string]string)
+	
+	// Проверяем yt-dlp
+	if err := youtubeService.CheckYtDlp(); err != nil {
+		health["yt-dlp"] = "❌ " + err.Error()
+	} else {
+		health["yt-dlp"] = "✅ Работает"
+	}
+	
+	// Проверяем сетевое подключение
+	if err := youtubeService.CheckNetwork(); err != nil {
+		health["network"] = "❌ " + err.Error()
+	} else {
+		health["network"] = "✅ Работает"
+	}
+	
+	// Проверяем кэш-сервис
+	if cacheService != nil {
+		health["cache"] = "✅ Работает"
+	} else {
+		health["cache"] = "⚠️ Не инициализирован"
+	}
+	
+	// Проверяем Telegram API
+	health["telegram"] = "✅ Работает"
+	
+	return health
+}
+
+// CleanupCache очищает старые данные кэша
+func CleanupCache(bot *LocalBot) {
+	log.Println("🧹 Запуск очистки кэша...")
+	
+	// Очищаем старые данные из памяти
+	clearedChats := 0
+	for chatID, lastTime := range bot.lastRequestTime {
+		if time.Since(lastTime) > 24*time.Hour {
+			delete(bot.formatCache, chatID)
+			delete(bot.videoURLCache, chatID)
+			delete(bot.lastRequestTime, chatID)
+			clearedChats++
+		}
+	}
+	
+	if clearedChats > 0 {
+		log.Printf("🧹 Очищено %d неактивных чатов из кэша", clearedChats)
+	}
+	
+	log.Printf("📊 Текущий размер кэша: %d чатов, %d URL", 
+		len(bot.formatCache), len(bot.videoURLCache))
 }
