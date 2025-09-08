@@ -9,6 +9,7 @@ import (
 	"mime/multipart"
 	"net/http"
 	"os"
+	"os/exec"
 	"os/signal"
 	"path/filepath"
 	"regexp"
@@ -244,11 +245,19 @@ func (b *LocalBot) SendVideoPreview(chatID int64, metadata *services.VideoMetada
 
 // SendVideo отправляет видео файл
 func (b *LocalBot) SendVideo(chatID int64, videoPath, caption string) error {
+	log.Printf("🎬 Отправляю видео: chatID=%d, path=%s", chatID, videoPath)
+	
 	file, err := os.Open(videoPath)
 	if err != nil {
 		return fmt.Errorf("ошибка открытия файла: %v", err)
 	}
 	defer file.Close()
+
+	// Получаем информацию о файле
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("ошибка получения информации о файле: %v", err)
+	}
 
 	// Создаем multipart form
 	var buf bytes.Buffer
@@ -257,10 +266,43 @@ func (b *LocalBot) SendVideo(chatID int64, videoPath, caption string) error {
 	// Добавляем chat_id
 	writer.WriteField("chat_id", fmt.Sprintf("%d", chatID))
 	
-	// Добавляем caption если есть
-	if caption != "" {
-		writer.WriteField("caption", caption)
+	// Добавляем caption с описанием бота
+	botCaption := fmt.Sprintf("%s\n\n🤖 Скачано через @YouLoaderTube_bot\n🔗 https://t.me/YouLoaderTube_bot", caption)
+	writer.WriteField("caption", botCaption)
+
+	// Добавляем длительность (в секундах)
+	// Пытаемся получить длительность из метаданных файла
+	duration := b.getVideoDuration(videoPath)
+	if duration > 0 {
+		writer.WriteField("duration", fmt.Sprintf("%d", duration))
+		log.Printf("⏱️ Установлена длительность: %d секунд", duration)
 	}
+
+	// Добавляем миниатюру если есть
+	thumbnailPath := b.getVideoThumbnail(videoPath)
+	if thumbnailPath != "" {
+		// Добавляем миниатюру как файл
+		thumbFile, err := os.Open(thumbnailPath)
+		if err == nil {
+			defer thumbFile.Close()
+			thumbWriter, err := writer.CreateFormFile("thumbnail", filepath.Base(thumbnailPath))
+			if err == nil {
+				io.Copy(thumbWriter, thumbFile)
+				log.Printf("🖼️ Добавлена миниатюра: %s", thumbnailPath)
+			}
+		}
+		// Удаляем миниатюру после отправки
+		defer func() {
+			if err := os.Remove(thumbnailPath); err != nil {
+				log.Printf("⚠️ Не удалось удалить миниатюру: %v", err)
+			} else {
+				log.Printf("🗑️ Миниатюра удалена: %s", thumbnailPath)
+			}
+		}()
+	}
+
+	// Добавляем размер файла
+	writer.WriteField("file_size", fmt.Sprintf("%d", fileInfo.Size()))
 
 	// Добавляем файл
 	part, err := writer.CreateFormFile("video", filepath.Base(videoPath))
@@ -288,10 +330,58 @@ func (b *LocalBot) SendVideo(chatID int64, videoPath, caption string) error {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		log.Printf("❌ Ошибка sendVideo: %d, ответ: %s", resp.StatusCode, string(body))
 		return fmt.Errorf("неуспешный статус sendVideo: %d, ответ: %s", resp.StatusCode, string(body))
 	}
 
+	log.Printf("✅ Видео отправлено успешно с миниатюрой и длительностью")
 	return nil
+}
+
+// getVideoDuration получает длительность видео в секундах
+func (b *LocalBot) getVideoDuration(videoPath string) int {
+	// Используем ffprobe для получения длительности
+	cmd := exec.Command("ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", videoPath)
+	output, err := cmd.Output()
+	if err != nil {
+		log.Printf("⚠️ Не удалось получить длительность видео: %v", err)
+		return 0
+	}
+	
+	durationStr := strings.TrimSpace(string(output))
+	duration, err := strconv.ParseFloat(durationStr, 64)
+	if err != nil {
+		log.Printf("⚠️ Не удалось распарсить длительность: %v", err)
+		return 0
+	}
+	
+	return int(duration)
+}
+
+// getVideoThumbnail получает путь к миниатюре видео
+func (b *LocalBot) getVideoThumbnail(videoPath string) string {
+	// Создаем путь для миниатюры
+	dir := filepath.Dir(videoPath)
+	base := filepath.Base(videoPath)
+	ext := filepath.Ext(base)
+	name := strings.TrimSuffix(base, ext)
+	thumbnailPath := filepath.Join(dir, name+"_thumb.jpg")
+	
+	// Генерируем миниатюру с помощью ffmpeg
+	cmd := exec.Command("ffmpeg", "-i", videoPath, "-ss", "00:00:01", "-vframes", "1", "-q:v", "2", thumbnailPath)
+	err := cmd.Run()
+	if err != nil {
+		log.Printf("⚠️ Не удалось создать миниатюру: %v", err)
+		return ""
+	}
+	
+	// Проверяем что файл создался
+	if _, err := os.Stat(thumbnailPath); err == nil {
+		log.Printf("🖼️ Создана миниатюра: %s", thumbnailPath)
+		return thumbnailPath
+	}
+	
+	return ""
 }
 
 // GetUpdates получает обновления от Telegram
@@ -1640,19 +1730,35 @@ func main() {
 										if err := bot.SendVideo(callback.Message.Chat.ID, videoPath, fmt.Sprintf("Аудио в формате %s", formatID)); err != nil {
 											log.Printf("❌ Ошибка отправки аудио: %v", err)
 											bot.SendMessage(callback.Message.Chat.ID, fmt.Sprintf("❌ Ошибка отправки: %v", err))
+											// Удаляем файл при ошибке
+											os.Remove(videoPath)
 											return
 										}
 										
 										log.Printf("✅ Аудио успешно отправлено: %s", formatID)
+										// Удаляем файл после успешной отправки
+										if err := os.Remove(videoPath); err != nil {
+											log.Printf("⚠️ Не удалось удалить аудио файл: %v", err)
+										} else {
+											log.Printf("🗑️ Аудио файл удален: %s", videoPath)
+										}
 									} else {
 										// Для видео файлов
 										if err := bot.SendVideo(callback.Message.Chat.ID, videoPath, fmt.Sprintf("Видео в формате %s", formatID)); err != nil {
 											log.Printf("❌ Ошибка отправки видео: %v", err)
 											bot.SendMessage(callback.Message.Chat.ID, fmt.Sprintf("❌ Ошибка отправки: %v", err))
+											// Удаляем файл при ошибке
+											os.Remove(videoPath)
 											return
 										}
 										
 										log.Printf("✅ Видео успешно отправлено: %s", formatID)
+										// Удаляем файл после успешной отправки
+										if err := os.Remove(videoPath); err != nil {
+											log.Printf("⚠️ Не удалось удалить видео файл: %v", err)
+										} else {
+											log.Printf("🗑️ Видео файл удален: %s", videoPath)
+										}
 									}
 									
 									// Сохраняем видео в кэш (только для видео, не для аудио)
