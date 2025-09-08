@@ -547,7 +547,11 @@ func (s *YouTubeService) DownloadVideo(url string) (string, error) {
 	args = append(args, proxyArgs...)
 	args = append(args, url)
 	
-	cmd := exec.Command(getYtDlpPath(), args...)
+	// Добавляем timeout для команды
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+	defer cancel()
+	
+	cmd := exec.CommandContext(ctx, getYtDlpPath(), args...)
 
 	log.Printf("🚀 Выполняю команду: %s", strings.Join(cmd.Args, " "))
 
@@ -608,7 +612,11 @@ func (s *YouTubeService) DownloadVideoWithFormat(videoURL, formatID string) (str
 		args = append(args, proxyArgs...)
 		args = append(args, videoURL)
 		
-		cmd := exec.Command(getYtDlpPath(), args...)
+		// Добавляем timeout для команды
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		
+		cmd := exec.CommandContext(ctx, getYtDlpPath(), args...)
 
 		log.Printf("🚀 Выполняю команду: %s", strings.Join(cmd.Args, " "))
 
@@ -836,7 +844,11 @@ func (s *YouTubeService) DownloadVideoFast(url string) (string, error) {
 		args := append(strategy.args, proxyArgs...)
 		args = append(args, url)
 		
-		cmd := exec.Command(getYtDlpPath(), args...)
+		// Добавляем timeout для команды
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Minute)
+		defer cancel()
+		
+		cmd := exec.CommandContext(ctx, getYtDlpPath(), args...)
 		
 		log.Printf("🚀 Выполняю команду: %s", strings.Join(cmd.Args, " "))
 		
@@ -989,7 +1001,11 @@ func (s *YouTubeService) GetVideoMetadata(url string) (*VideoMetadata, error) {
 	args = append(args, proxyArgs...)
 	args = append(args, url)
 	
-	cmd := exec.Command(getYtDlpPath(), args...)
+	// Добавляем timeout для команды метаданных
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	
+	cmd := exec.CommandContext(ctx, getYtDlpPath(), args...)
 	
 	log.Printf("🚀 Выполняю команду для метаданных: %s", strings.Join(cmd.Args, " "))
 	

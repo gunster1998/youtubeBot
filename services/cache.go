@@ -6,6 +6,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"sync"
 	"time"
 	_ "github.com/mattn/go-sqlite3"
 )
@@ -31,6 +32,7 @@ type CacheService struct {
 	db          *sql.DB
 	cacheDir    string
 	maxCacheSize int64 // Максимальный размер кэша в байтах (20-30 ГБ)
+	mutex       sync.RWMutex // Защита от race conditions
 }
 
 // NewCacheService создает новый сервис кэширования
@@ -164,6 +166,9 @@ func createCacheTable(db *sql.DB) error {
 
 // IsVideoCached проверяет, есть ли видео в кэше
 func (cs *CacheService) IsVideoCached(videoID, platform, formatID string) (bool, *VideoCache, error) {
+	cs.mutex.RLock()
+	defer cs.mutex.RUnlock()
+	
 	query := `SELECT id, video_id, platform, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at 
 			  FROM video_cache WHERE video_id = ? AND platform = ? AND format_id = ?`
 	
@@ -183,8 +188,14 @@ func (cs *CacheService) IsVideoCached(videoID, platform, formatID string) (bool,
 
 	// Проверяем, существует ли файл
 	if _, err := os.Stat(cache.FilePath); os.IsNotExist(err) {
-		// Файл удален, удаляем запись из БД
-		cs.db.Exec("DELETE FROM video_cache WHERE id = ?", cache.ID)
+		// Файл удален, удаляем запись из БД (с проверкой ошибки)
+		cs.mutex.RUnlock() // Временно разблокируем для записи
+		cs.mutex.Lock()
+		if _, deleteErr := cs.db.Exec("DELETE FROM video_cache WHERE id = ?", cache.ID); deleteErr != nil {
+			log.Printf("⚠️ Ошибка удаления записи из БД: %v", deleteErr)
+		}
+		cs.mutex.Unlock()
+		cs.mutex.RLock() // Возвращаем блокировку чтения
 		return false, nil, nil
 	}
 
@@ -193,6 +204,9 @@ func (cs *CacheService) IsVideoCached(videoID, platform, formatID string) (bool,
 
 // AddToCache добавляет видео в кэш
 func (cs *CacheService) AddToCache(videoID, platform, url, title, formatID, resolution, filePath string, fileSize int64) error {
+	cs.mutex.Lock()
+	defer cs.mutex.Unlock()
+	
 	// Проверяем размер кэша и очищаем если нужно
 	if err := cs.ensureCacheSize(fileSize); err != nil {
 		return fmt.Errorf("ошибка очистки кэша: %v", err)
@@ -237,6 +251,9 @@ func (cs *CacheService) AddToCache(videoID, platform, url, title, formatID, reso
 
 // IncrementDownloadCount увеличивает счетчик скачиваний
 func (cs *CacheService) IncrementDownloadCount(videoID, platform, formatID string) error {
+	cs.mutex.Lock()
+	defer cs.mutex.Unlock()
+	
 	query := `UPDATE video_cache SET download_count = download_count + 1, last_download = CURRENT_TIMESTAMP 
 			  WHERE video_id = ? AND platform = ? AND format_id = ?`
 	
@@ -250,6 +267,9 @@ func (cs *CacheService) IncrementDownloadCount(videoID, platform, formatID strin
 
 // GetPopularVideos возвращает популярные видео (5+ скачиваний)
 func (cs *CacheService) GetPopularVideos() ([]VideoCache, error) {
+	cs.mutex.RLock()
+	defer cs.mutex.RUnlock()
+	
 	query := `SELECT id, video_id, platform, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at 
 			  FROM video_cache WHERE download_count >= 5 ORDER BY download_count DESC, last_download DESC`
 	
@@ -314,8 +334,11 @@ func (cs *CacheService) ensureCacheSize(newFileSize int64) error {
 				continue
 			}
 
-			// Удаляем запись из БД
-			cs.db.Exec("DELETE FROM video_cache WHERE id = ?", id)
+			// Удаляем запись из БД (с проверкой ошибки)
+			if _, deleteErr := cs.db.Exec("DELETE FROM video_cache WHERE id = ?", id); deleteErr != nil {
+				log.Printf("⚠️ Ошибка удаления записи из БД: %v", deleteErr)
+				continue
+			}
 			
 			totalSize -= fileSize
 			log.Printf("🗑️ Удален старый файл: %s (%d байт)", filePath, fileSize)
@@ -353,8 +376,10 @@ func (cs *CacheService) cleanupOldFiles() error {
 			continue
 		}
 
-		// Удаляем запись из БД
-		cs.db.Exec("DELETE FROM video_cache WHERE id = ?", id)
+		// Удаляем запись из БД (с проверкой ошибки)
+		if _, deleteErr := cs.db.Exec("DELETE FROM video_cache WHERE id = ?", id); deleteErr != nil {
+			log.Printf("⚠️ Ошибка удаления записи из БД: %v", deleteErr)
+		}
 		log.Printf("🗑️ Удален старый файл: %s", filePath)
 	}
 

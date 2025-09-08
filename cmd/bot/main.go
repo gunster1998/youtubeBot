@@ -550,6 +550,11 @@ func (b *LocalBot) SendVideoPreview(chatID int64, metadata *services.VideoMetada
 func (b *LocalBot) SendVideo(chatID int64, videoPath, caption string) error {
 	log.Printf("🎬 Отправляю видео: chatID=%d, path=%s", chatID, videoPath)
 	
+	// Валидация файла перед отправкой
+	if !b.validateVideoFile(videoPath) {
+		return fmt.Errorf("файл не прошел валидацию: %s", videoPath)
+	}
+	
 	file, err := os.Open(videoPath)
 	if err != nil {
 		return fmt.Errorf("ошибка открытия файла: %v", err)
@@ -644,7 +649,11 @@ func (b *LocalBot) SendVideo(chatID int64, videoPath, caption string) error {
 // getVideoDuration получает длительность видео в секундах
 func (b *LocalBot) getVideoDuration(videoPath string) int {
 	// Используем ffprobe для получения длительности
-	cmd := exec.Command("ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", videoPath)
+	// Добавляем timeout для ffprobe
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	
+	cmd := exec.CommandContext(ctx, "ffprobe", "-v", "quiet", "-show_entries", "format=duration", "-of", "csv=p=0", videoPath)
 	output, err := cmd.Output()
 	if err != nil {
 		log.Printf("⚠️ Не удалось получить длительность видео: %v", err)
@@ -671,7 +680,11 @@ func (b *LocalBot) getVideoThumbnail(videoPath string) string {
 	thumbnailPath := filepath.Join(dir, name+"_thumb.jpg")
 	
 	// Генерируем миниатюру с помощью ffmpeg
-	cmd := exec.Command("ffmpeg", "-i", videoPath, "-ss", "00:00:01", "-vframes", "1", "-q:v", "2", thumbnailPath)
+	// Добавляем timeout для ffmpeg
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	
+	cmd := exec.CommandContext(ctx, "ffmpeg", "-i", videoPath, "-ss", "00:00:01", "-vframes", "1", "-q:v", "2", thumbnailPath)
 	err := cmd.Run()
 	if err != nil {
 		log.Printf("⚠️ Не удалось создать миниатюру: %v", err)
@@ -2284,6 +2297,54 @@ func (b *LocalBot) createVideoCaption(metadata *services.VideoMetadata, formatID
 		metadata.OriginalURL)
 	
 	return caption
+}
+
+// validateVideoFile проверяет валидность видео файла
+func (b *LocalBot) validateVideoFile(videoPath string) bool {
+	// Проверяем существование файла
+	if _, err := os.Stat(videoPath); os.IsNotExist(err) {
+		log.Printf("❌ Файл не существует: %s", videoPath)
+		return false
+	}
+	
+	// Проверяем размер файла (максимум 2GB для Telegram)
+	fileInfo, err := os.Stat(videoPath)
+	if err != nil {
+		log.Printf("❌ Ошибка получения информации о файле: %v", err)
+		return false
+	}
+	
+	// Telegram ограничение: 2GB = 2 * 1024 * 1024 * 1024 байт
+	maxSize := int64(2 * 1024 * 1024 * 1024)
+	if fileInfo.Size() > maxSize {
+		log.Printf("❌ Файл слишком большой: %d байт (максимум %d)", fileInfo.Size(), maxSize)
+		return false
+	}
+	
+	// Проверяем расширение файла
+	ext := strings.ToLower(filepath.Ext(videoPath))
+	allowedExts := []string{".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
+	isValidExt := false
+	for _, allowedExt := range allowedExts {
+		if ext == allowedExt {
+			isValidExt = true
+			break
+		}
+	}
+	
+	if !isValidExt {
+		log.Printf("❌ Неподдерживаемое расширение файла: %s", ext)
+		return false
+	}
+	
+	// Проверяем что файл не пустой
+	if fileInfo.Size() == 0 {
+		log.Printf("❌ Файл пустой: %s", videoPath)
+		return false
+	}
+	
+	log.Printf("✅ Файл прошел валидацию: %s (%d байт)", videoPath, fileInfo.Size())
+	return true
 }
 
 // extractResolutionNumber извлекает числовое значение разрешения
