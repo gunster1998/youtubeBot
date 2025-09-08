@@ -39,10 +39,31 @@ type LocalBot struct {
 	cacheService *services.CacheService
 	// Защита от спама - время последнего запроса по чатам
 	lastRequestTime map[int64]time.Time
+	// Метрики производительности
+	metrics *BotMetrics
+	// ID администраторов
+	adminIDs map[int64]bool
+}
+
+// BotMetrics содержит метрики производительности бота
+type BotMetrics struct {
+	StartTime        time.Time
+	TotalRequests    int64
+	SuccessfulRequests int64
+	FailedRequests   int64
+	TotalDownloads   int64
+	TotalErrors      int64
+	AverageResponseTime time.Duration
+	LastActivity     time.Time
 }
 
 // NewLocalBot создает новый экземпляр LocalBot
 func NewLocalBot(token, apiURL string, timeout time.Duration, youtubeService *services.YouTubeService, cacheService *services.CacheService) *LocalBot {
+	// Создаем карту администраторов
+	adminIDs := make(map[int64]bool)
+	adminIDs[6717533619] = true  // Первый администратор
+	adminIDs[234549643] = true   // Второй администратор
+	
 	return &LocalBot{
 		Token:  token,
 		APIURL: apiURL,
@@ -54,6 +75,11 @@ func NewLocalBot(token, apiURL string, timeout time.Duration, youtubeService *se
 		youtubeService: youtubeService,
 		cacheService: cacheService,
 		lastRequestTime: make(map[int64]time.Time),
+		metrics: &BotMetrics{
+			StartTime: time.Now(),
+			LastActivity: time.Now(),
+		},
+		adminIDs: adminIDs,
 	}
 }
 
@@ -571,6 +597,15 @@ type Message struct {
 	MessageID int64  `json:"message_id"`
 	Text      string `json:"text"`
 	Chat      Chat   `json:"chat"`
+	From      User   `json:"from"`
+}
+
+// User представляет пользователя Telegram
+type User struct {
+	ID        int64  `json:"id"`
+	FirstName string `json:"first_name"`
+	LastName  string `json:"last_name,omitempty"`
+	Username  string `json:"username,omitempty"`
 }
 
 // Chat представляет чат в Telegram
@@ -688,7 +723,7 @@ func main() {
 					
 					// Обрабатываем команды
 					if message.Text == "/start" {
-						bot.SendMessage(message.Chat.ID, "🎬 Привет! Я YouTube Downloader Bot!\n\n📋 Доступные команды:\n/start - Начать работу\n/help - Справка\n/status - Статус бота\n/stats - Статистика\n\n🔗 Отправьте ссылку на YouTube видео для скачивания.")
+						bot.SendMessage(message.Chat.ID, "🎬 Привет! Я YouTube Downloader Bot!\n\n📋 Доступные команды:\n/start - Начать работу\n/help - Справка\n/status - Статус бота\n/info - Информация о боте\n/ping - Проверка отзывчивости\n/version - Информация о версии\n\n🔗 Отправьте ссылку на YouTube видео для скачивания.")
 					} else if message.Text == "/help" {
 						helpText := `🎬 YouTube Downloader Bot - Справка
 
@@ -696,7 +731,12 @@ func main() {
 /start - Начать работу с ботом
 /help - Показать эту справку
 /status - Проверить статус бота
-/stats - Показать статистику работы
+/info - Информация о боте
+/ping - Проверка отзывчивости
+/version - Информация о версии
+
+🔒 Административные команды:
+/stats - Детальная статистика (только для админов)
 
 🔗 Как использовать:
 1. Отправьте ссылку на YouTube видео
@@ -745,20 +785,113 @@ func main() {
 							len(bot.formatCache), len(bot.videoURLCache))
 						bot.SendMessage(message.Chat.ID, statusText)
 					} else if message.Text == "/stats" {
-						statsText := fmt.Sprintf(`📊 Статистика бота
+						// Проверяем, является ли пользователь администратором
+						if !bot.IsAdmin(message.From.ID) {
+							bot.SendMessage(message.Chat.ID, "❌ Доступ запрещен\n\n🔒 Эта команда доступна только администраторам")
+							continue
+						}
+						
+						metrics := bot.GetMetrics()
+						uptime := bot.GetUptime()
+						
+						statsText := fmt.Sprintf(`📊 Детальная статистика бота (только для админов)
+
+🕐 Время работы: %s
+📈 Всего запросов: %d
+✅ Успешных: %d
+❌ Неудачных: %d
+📥 Скачиваний: %d
+⚡ Среднее время ответа: %v
 
 🔄 Активные чаты: %d
 💾 Кэшированные URL: %d
 🎬 Сервис YouTube: Активен
 💾 Кэш-сервис: Активен
 
-⏰ Время работы: Постоянно
-🌐 Прокси: Настроен
-📱 Telegram API: Подключен
+📊 Производительность:
+• Успешность: %.1f%%
+• Последняя активность: %s
+
+👤 Запросил: %s (ID: %d)
 
 💡 Для получения справки используйте /help`, 
-							len(bot.formatCache), len(bot.videoURLCache))
+							formatDuration(uptime),
+							metrics.TotalRequests,
+							metrics.SuccessfulRequests,
+							metrics.FailedRequests,
+							metrics.TotalDownloads,
+							metrics.AverageResponseTime,
+							len(bot.formatCache), 
+							len(bot.videoURLCache),
+							float64(metrics.SuccessfulRequests)/float64(metrics.TotalRequests)*100,
+							formatTime(metrics.LastActivity),
+							message.From.FirstName,
+							message.From.ID)
 						bot.SendMessage(message.Chat.ID, statsText)
+					} else if message.Text == "/info" {
+						infoText := `ℹ️ Информация о боте
+
+🎬 YouTube Downloader Bot v3.0
+📅 Версия: 2024.12.19
+🔧 Статус: Активен
+
+🚀 Возможности:
+• Скачивание видео с YouTube
+• Выбор качества и формата
+• Поддержка аудио и видео
+• Кэширование популярных видео
+• Защита от спама
+• Автоматические повторы при сбоях
+
+⚙️ Технические особенности:
+• Retry механизм с экспоненциальной задержкой
+• Детальная обработка ошибок
+• Мониторинг производительности
+• Автоматическая очистка кэша
+• Graceful shutdown
+
+💡 Для начала работы отправьте ссылку на YouTube видео`
+						bot.SendMessage(message.Chat.ID, infoText)
+					} else if message.Text == "/ping" {
+						startTime := time.Now()
+						bot.SendMessage(message.Chat.ID, "🏓 Pong!")
+						responseTime := time.Since(startTime)
+						
+						pingText := fmt.Sprintf(`🏓 Pong! 
+
+⚡ Время ответа: %v
+🕐 Время сервера: %s
+📊 Статус: ✅ Работает
+
+💡 Бот отвечает быстро и готов к работе!`, 
+							responseTime, 
+							time.Now().Format("15:04:05"))
+						bot.SendMessage(message.Chat.ID, pingText)
+					} else if message.Text == "/version" {
+						versionText := `📋 Информация о версии
+
+🎬 YouTube Downloader Bot
+📅 Версия: 3.0.0
+🔧 Сборка: 2024.12.19
+🏗️ Архитектура: Go 1.25.0
+
+🚀 Новые возможности v3.0:
+• Retry механизм с экспоненциальной задержкой
+• Детальная обработка ошибок (8 типов)
+• Мониторинг производительности в реальном времени
+• Улучшенное управление кэшем
+• Graceful shutdown
+• Защита от спама
+• Команды /ping, /version, /info
+
+⚙️ Технические улучшения:
+• Оптимизация YouTube сервиса
+• Автоматическая очистка памяти
+• Улучшенное логирование
+• Проверки здоровья сервисов
+
+💡 Для получения справки используйте /help`
+						bot.SendMessage(message.Chat.ID, versionText)
 					} else if len(message.Text) > 10 && (strings.Contains(message.Text, "youtube.com") || strings.Contains(message.Text, "youtu.be")) {
 						// YouTube ссылка - показываем доступные форматы
 						log.Printf("🔍 Обрабатываю YouTube ссылку: %s", message.Text)
@@ -781,6 +914,8 @@ func main() {
 						bot.lastRequestTime[message.Chat.ID] = time.Now()
 						
 						go func() {
+							startTime := time.Now()
+							
 							// Очищаем старый кэш для этого чата ВНУТРИ горутины
 							delete(bot.formatCache, message.Chat.ID)
 							delete(bot.videoURLCache, message.Chat.ID)
@@ -954,6 +1089,13 @@ func main() {
 							if err := bot.SendFormatTypeMenu(message.Chat.ID, len(audioFormats), len(videoFormats)); err != nil {
 								log.Printf("❌ Ошибка отправки меню выбора типа: %v", err)
 								bot.SendMessage(message.Chat.ID, "❌ Ошибка создания меню выбора")
+								// Обновляем метрики для ошибки
+								duration := time.Since(startTime)
+								bot.UpdateMetrics("get_formats", false, duration)
+							} else {
+								// Обновляем метрики для успеха
+								duration := time.Since(startTime)
+								bot.UpdateMetrics("get_formats", true, duration)
 							}
 							
 							// НЕ скачиваем автоматически - ждем команду пользователя
@@ -1081,10 +1223,11 @@ func main() {
 							
 							// Запускаем загрузку в отдельной горутине
 							go func() {
+								startTime := time.Now()
 								log.Printf("🚀 Начинаю загрузку видео в формате %s", formatID)
 								bot.SendMessage(callback.Message.Chat.ID, "🔄 Начинаю загрузку...")
 								
-															// Получаем URL видео из кэша
+														// Получаем URL видео из кэша
 							videoURL := bot.videoURLCache[callback.Message.Chat.ID]
 							if videoURL == "" {
 								log.Printf("❌ URL видео не найден в кэше для чата %d", callback.Message.Chat.ID)
@@ -1232,6 +1375,10 @@ func main() {
 									log.Printf("❌ Не найден URL для формата %s", formatID)
 									bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка: не найден URL для загрузки")
 								}
+								
+								// Обновляем метрики
+								duration := time.Since(startTime)
+								bot.UpdateMetrics("download", true, duration)
 							}()
 						}
 					} else if callback.Data == "instant_best" {
@@ -1420,4 +1567,72 @@ func CleanupCache(bot *LocalBot) {
 	
 	log.Printf("📊 Текущий размер кэша: %d чатов, %d URL", 
 		len(bot.formatCache), len(bot.videoURLCache))
+}
+
+// UpdateMetrics обновляет метрики бота
+func (b *LocalBot) UpdateMetrics(requestType string, success bool, duration time.Duration) {
+	b.metrics.TotalRequests++
+	b.metrics.LastActivity = time.Now()
+	
+	if success {
+		b.metrics.SuccessfulRequests++
+		if requestType == "download" {
+			b.metrics.TotalDownloads++
+		}
+	} else {
+		b.metrics.FailedRequests++
+		b.metrics.TotalErrors++
+	}
+	
+	// Обновляем среднее время ответа
+	if b.metrics.TotalRequests > 0 {
+		totalDuration := b.metrics.AverageResponseTime * time.Duration(b.metrics.TotalRequests-1)
+		b.metrics.AverageResponseTime = (totalDuration + duration) / time.Duration(b.metrics.TotalRequests)
+	}
+}
+
+// GetMetrics возвращает текущие метрики бота
+func (b *LocalBot) GetMetrics() *BotMetrics {
+	return b.metrics
+}
+
+// GetUptime возвращает время работы бота
+func (b *LocalBot) GetUptime() time.Duration {
+	return time.Since(b.metrics.StartTime)
+}
+
+// IsAdmin проверяет, является ли пользователь администратором
+func (b *LocalBot) IsAdmin(userID int64) bool {
+	return b.adminIDs[userID]
+}
+
+// formatDuration форматирует продолжительность в читаемый вид
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%.0f сек", d.Seconds())
+	} else if d < time.Hour {
+		return fmt.Sprintf("%.0f мин", d.Minutes())
+	} else if d < 24*time.Hour {
+		return fmt.Sprintf("%.1f ч", d.Hours())
+	} else {
+		days := int(d.Hours() / 24)
+		hours := int(d.Hours()) % 24
+		return fmt.Sprintf("%d дн %d ч", days, hours)
+	}
+}
+
+// formatTime форматирует время в читаемый вид
+func formatTime(t time.Time) string {
+	now := time.Now()
+	diff := now.Sub(t)
+	
+	if diff < time.Minute {
+		return "только что"
+	} else if diff < time.Hour {
+		return fmt.Sprintf("%.0f мин назад", diff.Minutes())
+	} else if diff < 24*time.Hour {
+		return fmt.Sprintf("%.0f ч назад", diff.Hours())
+	} else {
+		return t.Format("02.01.2006 15:04")
+	}
 }
