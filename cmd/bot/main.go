@@ -194,6 +194,54 @@ func (b *LocalBot) ClearChatHistory(chatID int64) error {
 	return nil
 }
 
+// SendVideoPreview отправляет превью видео с метаданными и миниатюрой
+func (b *LocalBot) SendVideoPreview(chatID int64, metadata *services.VideoMetadata) error {
+	log.Printf("🎬 Начинаю отправку превью для чата %d", chatID)
+	log.Printf("🎬 Метаданные: Title=%s, Author=%s, Thumbnail=%s", metadata.Title, metadata.Author, metadata.Thumbnail)
+	
+	// Создаем красивое превью
+	previewText := fmt.Sprintf(`🎬 **%s**
+
+👤 **Автор:** %s
+⏱️ **Длительность:** %s
+👁️ **Просмотры:** %s
+📅 **Дата:** %s
+
+📝 **Описание:**
+%s
+
+🔗 Выберите качество для скачивания:`, 
+		metadata.Title,
+		metadata.Author,
+		metadata.Duration,
+		metadata.Views,
+		metadata.UploadDate,
+		metadata.Description)
+	
+	// Если есть миниатюра - отправляем фото с подписью
+	if metadata.Thumbnail != "" {
+		log.Printf("🖼️ Отправляю превью с миниатюрой: %s", metadata.Thumbnail)
+		log.Printf("🖼️ Текст превью: %s", previewText)
+		err := b.SendPhoto(chatID, metadata.Thumbnail, previewText)
+		if err != nil {
+			log.Printf("❌ Ошибка SendPhoto: %v", err)
+			return err
+		}
+		log.Printf("✅ SendPhoto выполнен успешно")
+		return nil
+	}
+	
+	// Если нет миниатюры - отправляем только текст
+	log.Printf("⚠️ Миниатюра не найдена, отправляю только текст")
+	err := b.SendMessage(chatID, previewText)
+	if err != nil {
+		log.Printf("❌ Ошибка SendMessage: %v", err)
+		return err
+	}
+	log.Printf("✅ SendMessage выполнен успешно")
+	return nil
+}
+
 // SendVideo отправляет видео файл
 func (b *LocalBot) SendVideo(chatID int64, videoPath, caption string) error {
 	file, err := os.Open(videoPath)
@@ -353,6 +401,49 @@ func (b *LocalBot) SendFormatTypeMenu(chatID int64, audioCount, videoCount int) 
 	}
 	
 	log.Printf("✅ Меню выбора типа отправлено успешно")
+	return nil
+}
+
+// SendPhoto отправляет фото с подписью
+func (b *LocalBot) SendPhoto(chatID int64, photoURL, caption string) error {
+	log.Printf("📸 Отправляю фото: chatID=%d, URL=%s", chatID, photoURL)
+	log.Printf("📸 Подпись: %s", caption)
+	
+	message := map[string]interface{}{
+		"chat_id": chatID,
+		"photo":   photoURL,
+		"caption": caption,
+		"parse_mode": "Markdown",
+	}
+
+	jsonData, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("❌ Ошибка маршалинга: %v", err)
+		return fmt.Errorf("ошибка маршалинга сообщения: %v", err)
+	}
+	
+	log.Printf("📸 JSON данные: %s", string(jsonData))
+
+	resp, err := b.Client.Post(
+		fmt.Sprintf("%s/bot%s/sendPhoto", b.APIURL, b.Token),
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	if err != nil {
+		log.Printf("❌ Ошибка HTTP запроса: %v", err)
+		return fmt.Errorf("ошибка отправки фото: %v", err)
+	}
+	defer resp.Body.Close()
+
+	log.Printf("📸 HTTP статус: %d", resp.StatusCode)
+	
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("❌ Ошибка ответа: %s", string(body))
+		return fmt.Errorf("неуспешный статус sendPhoto: %d, ответ: %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("✅ Фото отправлено успешно")
 	return nil
 }
 
@@ -816,7 +907,7 @@ func main() {
 							platformList += fmt.Sprintf("%s %s\n", platform.Icon, platform.DisplayName)
 						}
 						
-						bot.SendMessage(message.Chat.ID, fmt.Sprintf("🎬 Привет! Я Universal Video Downloader Bot!\n\n📋 Доступные команды:\n/start - Начать работу\n/help - Справка\n/status - Статус бота\n/info - Информация о боте\n/ping - Проверка отзывчивости\n/version - Информация о версии\n\n🎯 Поддерживаемые платформы:\n%s\n🔗 Отправьте ссылку на видео для скачивания.", platformList))
+						bot.SendMessage(message.Chat.ID, fmt.Sprintf("🎬 Привет! Я YouTube Video Downloader Bot!\n\n📋 Доступные команды:\n/start - Начать работу\n/help - Справка\n/status - Статус бота\n/info - Информация о боте\n/ping - Проверка отзывчивости\n/version - Информация о версии\n\n🎯 Поддерживаемые платформы:\n%s\n🔗 Отправьте ссылку на YouTube видео для скачивания.", platformList))
 					} else if message.Text == "/help" {
 						platforms := bot.universalService.GetSupportedPlatforms()
 						platformList := ""
@@ -824,7 +915,7 @@ func main() {
 							platformList += fmt.Sprintf("• %s %s\n", platform.Icon, platform.DisplayName)
 						}
 						
-						helpText := fmt.Sprintf(`🎬 Universal Video Downloader Bot - Справка
+						helpText := fmt.Sprintf(`🎬 YouTube Video Downloader Bot - Справка
 
 📋 Команды:
 /start - Начать работу с ботом
@@ -841,13 +932,13 @@ func main() {
 🎯 Поддерживаемые платформы:
 %s
 🔗 Как использовать:
-1. Отправьте ссылку на видео с любой поддерживаемой платформы
+1. Отправьте ссылку на YouTube видео
 2. Выберите тип формата (аудио/видео)
 3. Выберите качество из списка
 4. Дождитесь загрузки
 
 ✨ Особенности:
-• Поддержка всех популярных платформ
+• Поддержка YouTube и YouTube Shorts
 • Выбор качества видео
 • Быстрая загрузка из кэша
 • Поддержка прокси для России
@@ -861,8 +952,7 @@ func main() {
 🎯 Примеры ссылок:
 • https://www.youtube.com/watch?v=VIDEO_ID
 • https://youtu.be/VIDEO_ID
-• https://www.tiktok.com/@user/video/VIDEO_ID
-• https://www.instagram.com/p/VIDEO_ID`, platformList)
+• https://www.youtube.com/shorts/VIDEO_ID`, platformList)
 						bot.SendMessage(message.Chat.ID, helpText)
 					} else if message.Text == "/status" {
 						// Получаем состояние всех сервисов
@@ -942,14 +1032,14 @@ func main() {
 						
 						infoText := fmt.Sprintf(`ℹ️ Информация о боте
 
-🎬 Universal Video Downloader Bot v4.0
+🎬 YouTube Video Downloader Bot v4.0
 📅 Версия: 2024.12.19
 🔧 Статус: Активен
 
 🎯 Поддерживаемые платформы:
 %s
 🚀 Возможности:
-• Скачивание видео с любых поддерживаемых платформ
+• Скачивание видео с YouTube и YouTube Shorts
 • Выбор качества и формата
 • Поддержка аудио и видео
 • Кэширование популярных видео
@@ -959,13 +1049,13 @@ func main() {
 
 ⚙️ Технические особенности:
 • Retry механизм с экспоненциальной задержкой
-• Детальная обработка ошибок для каждой платформы
+• Детальная обработка ошибок для YouTube
 • Мониторинг производительности
 • Автоматическая очистка кэша
 • Graceful shutdown
 • Поддержка прокси для обхода блокировок
 
-💡 Для начала работы отправьте ссылку на видео с любой поддерживаемой платформы`, platformList)
+💡 Для начала работы отправьте ссылку на YouTube видео`, platformList)
 						bot.SendMessage(message.Chat.ID, infoText)
 					} else if message.Text == "/ping" {
 						startTime := time.Now()
@@ -998,16 +1088,16 @@ func main() {
 					} else if message.Text == "/version" {
 						versionText := `📋 Информация о версии
 
-🎬 Universal Video Downloader Bot
+🎬 YouTube Video Downloader Bot
 📅 Версия: 4.0.0
 🔧 Сборка: 2024.12.19
 🏗️ Архитектура: Go 1.25.0
 
 🚀 Новые возможности v4.0:
-• Поддержка множества платформ (YouTube, TikTok, Instagram, VK, Twitter, Facebook)
+• Поддержка YouTube и YouTube Shorts
 • Универсальная система детекции платформ
-• Расширенная кэш-система для всех платформ
-• Улучшенная обработка ошибок для каждой платформы
+• Расширенная кэш-система для YouTube
+• Улучшенная обработка ошибок для YouTube
 • Retry механизм с экспоненциальной задержкой
 • Мониторинг производительности в реальном времени
 • Graceful shutdown
@@ -1015,7 +1105,7 @@ func main() {
 • Команды /ping, /version, /info
 
 ⚙️ Технические улучшения:
-• Универсальный сервис для всех платформ
+• Универсальный сервис для YouTube
 • Автоматическая очистка памяти
 • Улучшенное логирование
 • Проверки здоровья сервисов
@@ -1033,7 +1123,7 @@ func main() {
 						
 						// Дополнительная валидация URL перед обработкой
 						if !platformInfo.Supported {
-							bot.SendMessage(message.Chat.ID, "❌ Неверный формат ссылки\n\n💡 Поддерживаемые платформы:\n🎬 YouTube, YouTube Shorts\n🎵 TikTok\n📸 Instagram\n🔵 VKontakte\n🐦 Twitter/X\n📘 Facebook")
+							bot.SendMessage(message.Chat.ID, "❌ Неверный формат ссылки\n\n💡 Поддерживаемые платформы:\n🎬 YouTube\n🎬 YouTube Shorts")
 							continue
 						}
 						
@@ -1048,33 +1138,68 @@ func main() {
 						// Обновляем время последнего запроса
 						bot.lastRequestTime[message.Chat.ID] = time.Now()
 						
-						go func() {
+						go func(url string, chatID int64, platform services.PlatformInfo) {
 							startTime := time.Now()
 							
 							// Очищаем старый кэш для этого чата ВНУТРИ горутины
-							delete(bot.formatCache, message.Chat.ID)
-							delete(bot.videoURLCache, message.Chat.ID)
-							delete(bot.platformCache, message.Chat.ID)
-							log.Printf("🗑️ Очистил старый кэш для чата %d", message.Chat.ID)
+							delete(bot.formatCache, chatID)
+							delete(bot.videoURLCache, chatID)
+							delete(bot.platformCache, chatID)
+							log.Printf("🗑️ Очистил старый кэш для чата %d", chatID)
 							
 							// Очищаем историю чата (удаляем старые сообщения бота)
-							if err := bot.ClearChatHistory(message.Chat.ID); err != nil {
+							if err := bot.ClearChatHistory(chatID); err != nil {
 								log.Printf("⚠️ Не удалось очистить историю чата: %v", err)
 							}
 							
-							log.Printf("🚀 Запускаю анализ форматов для: %s", message.Text)
-							bot.SendMessage(message.Chat.ID, "🔍 Анализирую доступные форматы видео... ⏳ Пожалуйста, подождите до 2 минут для больших видео.")
+							log.Printf("🚀 Запускаю анализ видео для: %s", url)
+							bot.SendMessage(chatID, "🔍 Анализирую видео... ⏳ Пожалуйста, подождите до 2 минут для больших видео.")
+							
+							// Получаем метаданные видео для превью
+							log.Printf("🔍 ОТЛАДКА: platform.Type = %s", platform.Type)
+							log.Printf("🔍 ОТЛАДКА: PlatformYouTube = %s", services.PlatformYouTube)
+							log.Printf("🔍 ОТЛАДКА: PlatformYouTubeShorts = %s", services.PlatformYouTubeShorts)
+							
+							var metadata *services.VideoMetadata
+							if platform.Type == services.PlatformYouTube || platform.Type == services.PlatformYouTubeShorts {
+								log.Printf("🔍 Получаю метаданные для YouTube видео...")
+								log.Printf("🔍 URL для метаданных: %s", url)
+								log.Printf("🔍 ChatID для метаданных: %d", chatID)
+								
+								metadata, err := bot.youtubeService.GetVideoMetadata(url)
+								if err != nil {
+									log.Printf("❌ ОШИБКА получения метаданных: %v", err)
+									log.Printf("❌ Детали ошибки: %+v", err)
+									// Продолжаем без метаданных
+								} else {
+									log.Printf("✅ Метаданные получены успешно!")
+									log.Printf("✅ Заголовок: %s", metadata.Title)
+									log.Printf("✅ Автор: %s", metadata.Author)
+									log.Printf("✅ Миниатюра: %s", metadata.Thumbnail)
+									log.Printf("✅ Отправляю превью...")
+									
+									// Отправляем превью с метаданными
+									if err := bot.SendVideoPreview(chatID, metadata); err != nil {
+										log.Printf("❌ ОШИБКА отправки превью: %v", err)
+										log.Printf("❌ Детали ошибки отправки: %+v", err)
+									} else {
+										log.Printf("✅ Превью отправлено успешно!")
+									}
+								}
+							} else {
+								log.Printf("⚠️ Платформа %s не поддерживает метаданные", platform.Type)
+							}
 							
 							// Получаем список форматов
-							log.Printf("📋 Вызываю GetVideoFormats для %s...", platformInfo.DisplayName)
+							log.Printf("📋 Вызываю GetVideoFormats для %s...", platform.DisplayName)
 							// Получаем доступные форматы через youtubeService для YouTube
 							var formats []services.VideoFormat
 							var err error
 							
-							if platformInfo.Type == services.PlatformYouTube || platformInfo.Type == services.PlatformYouTubeShorts {
-								formats, err = bot.youtubeService.GetVideoFormats(message.Text)
+							if platform.Type == services.PlatformYouTube || platform.Type == services.PlatformYouTubeShorts {
+								formats, err = bot.youtubeService.GetVideoFormats(url)
 							} else {
-								formats, err = bot.universalService.GetVideoFormats(message.Text)
+								formats, err = bot.universalService.GetVideoFormats(url)
 							}
 							if err != nil {
 								log.Printf("❌ Ошибка GetVideoFormats: %v", err)
@@ -1083,43 +1208,47 @@ func main() {
 								var userMessage string
 								switch {
 								case strings.Contains(err.Error(), "not made this video available in your country"):
-									userMessage = fmt.Sprintf("❌ Видео недоступно в вашем регионе\n\n💡 Попробуйте:\n• Другое видео\n• VPN с другой страной\n• Видео, доступное в России\n\n🎯 Платформа: %s %s", platformInfo.Icon, platformInfo.DisplayName)
+									userMessage = fmt.Sprintf("❌ Видео недоступно в вашем регионе\n\n💡 Попробуйте:\n• Другое видео\n• VPN с другой страной\n• Видео, доступное в России\n\n🎯 Платформа: %s %s", platform.Icon, platform.DisplayName)
 								case strings.Contains(err.Error(), "Video unavailable"):
-									userMessage = fmt.Sprintf("❌ Видео недоступно\n\n💡 Возможные причины:\n• Видео удалено\n• Приватное видео\n• Ограничения автора\n\n🎯 Платформа: %s %s", platformInfo.Icon, platformInfo.DisplayName)
+									userMessage = fmt.Sprintf("❌ Видео недоступно\n\n💡 Возможные причины:\n• Видео удалено\n• Приватное видео\n• Ограничения автора\n\n🎯 Платформа: %s %s", platform.Icon, platform.DisplayName)
 								case strings.Contains(err.Error(), "timeout") || strings.Contains(err.Error(), "таймаут"):
-									userMessage = fmt.Sprintf("⏱️ Превышено время ожидания\n\n💡 Попробуйте:\n• Проверить интернет\n• Попробовать позже\n• Другое видео\n\n🎯 Платформа: %s %s", platformInfo.Icon, platformInfo.DisplayName)
+									userMessage = fmt.Sprintf("⏱️ Превышено время ожидания\n\n💡 Попробуйте:\n• Проверить интернет\n• Попробовать позже\n• Другое видео\n\n🎯 Платформа: %s %s", platform.Icon, platform.DisplayName)
 								case strings.Contains(err.Error(), "SSL") || strings.Contains(err.Error(), "handshake"):
-									userMessage = fmt.Sprintf("🔒 Проблемы с SSL соединением\n\n💡 Попробуйте:\n• Проверить интернет\n• Использовать VPN\n• Другое видео\n\n🎯 Платформа: %s %s", platformInfo.Icon, platformInfo.DisplayName)
+									userMessage = fmt.Sprintf("🔒 Проблемы с SSL соединением\n\n💡 Попробуйте:\n• Проверить интернет\n• Использовать VPN\n• Другое видео\n\n🎯 Платформа: %s %s", platform.Icon, platform.DisplayName)
 								case strings.Contains(err.Error(), "Sign in to confirm your age"):
-									userMessage = fmt.Sprintf("🔞 Видео содержит контент для взрослых\n\n💡 Попробуйте другое видео\n\n🎯 Платформа: %s %s", platformInfo.Icon, platformInfo.DisplayName)
+									userMessage = fmt.Sprintf("🔞 Видео содержит контент для взрослых\n\n💡 Попробуйте другое видео\n\n🎯 Платформа: %s %s", platform.Icon, platform.DisplayName)
 								case strings.Contains(err.Error(), "Private video"):
-									userMessage = fmt.Sprintf("🔒 Приватное видео\n\n💡 Попробуйте публичное видео\n\n🎯 Платформа: %s %s", platformInfo.Icon, platformInfo.DisplayName)
+									userMessage = fmt.Sprintf("🔒 Приватное видео\n\n💡 Попробуйте публичное видео\n\n🎯 Платформа: %s %s", platform.Icon, platform.DisplayName)
 								case strings.Contains(err.Error(), "Live stream"):
-									userMessage = fmt.Sprintf("📺 Прямая трансляция\n\n💡 Попробуйте записанное видео\n\n🎯 Платформа: %s %s", platformInfo.Icon, platformInfo.DisplayName)
+									userMessage = fmt.Sprintf("📺 Прямая трансляция\n\n💡 Попробуйте записанное видео\n\n🎯 Платформа: %s %s", platform.Icon, platform.DisplayName)
 								case strings.Contains(err.Error(), "No video formats found"):
-									userMessage = fmt.Sprintf("📹 Форматы видео не найдены\n\n💡 Попробуйте:\n• Другое видео\n• Проверить ссылку\n• Попробовать позже\n\n🎯 Платформа: %s %s", platformInfo.Icon, platformInfo.DisplayName)
+									userMessage = fmt.Sprintf("📹 Форматы видео не найдены\n\n💡 Попробуйте:\n• Другое видео\n• Проверить ссылку\n• Попробовать позже\n\n🎯 Платформа: %s %s", platform.Icon, platform.DisplayName)
 								default:
-									userMessage = fmt.Sprintf("❌ Ошибка получения видео\n\n🔧 Техническая информация:\n%s\n\n💡 Попробуйте:\n• Другое видео\n• Проверить ссылку\n• Попробовать позже\n\n🎯 Платформа: %s %s", err.Error(), platformInfo.Icon, platformInfo.DisplayName)
+									userMessage = fmt.Sprintf("❌ Ошибка получения видео\n\n🔧 Техническая информация:\n%s\n\n💡 Попробуйте:\n• Другое видео\n• Проверить ссылку\n• Попробовать позже\n\n🎯 Платформа: %s %s", err.Error(), platform.Icon, platform.DisplayName)
 								}
 								
-								bot.SendMessage(message.Chat.ID, userMessage)
+								bot.SendMessage(chatID, userMessage)
 								return
 							}
 							
 							log.Printf("📊 Получено форматов: %d", len(formats))
 							
 							// Уведомляем о завершении анализа
-							bot.SendMessage(message.Chat.ID, "✅ Анализ завершен! Найдено несколько доступных форматов.")
+							if metadata != nil {
+								bot.SendMessage(chatID, "✅ Анализ завершен! Найдено несколько доступных форматов.")
+							} else {
+								bot.SendMessage(chatID, "✅ Анализ завершен! Найдено несколько доступных форматов.")
+							}
 							
 							// Проверяем, что URL в кэше соответствует текущему запросу
-							cachedURL := bot.videoURLCache[message.Chat.ID]
-							if cachedURL != "" && cachedURL != message.Text {
+							cachedURL := bot.videoURLCache[chatID]
+							if cachedURL != "" && cachedURL != url {
 								log.Printf("⚠️ ВНИМАНИЕ: URL в кэше не соответствует текущему запросу!")
 								log.Printf("  Кэш: %s", cachedURL)
-								log.Printf("  Текущий: %s", message.Text)
+								log.Printf("  Текущий: %s", url)
 								// Очищаем кэш и сохраняем новый URL
-								delete(bot.formatCache, message.Chat.ID)
-								delete(bot.videoURLCache, message.Chat.ID)
+								delete(bot.formatCache, chatID)
+								delete(bot.videoURLCache, chatID)
 								log.Printf("🗑️ Принудительно очистил кэш из-за несоответствия URL")
 							}
 							
@@ -1132,15 +1261,15 @@ func main() {
 							
 							if len(formats) == 0 {
 								log.Printf("⚠️ Форматы не найдены")
-								bot.SendMessage(message.Chat.ID, "❌ Не найдено доступных форматов для скачивания.")
+								bot.SendMessage(chatID, "❌ Не найдено доступных форматов для скачивания.")
 								return
 							}
 							
 							// Сохраняем форматы, URL и платформу в кэше для этого чата
-							bot.formatCache[message.Chat.ID] = formats
-							bot.videoURLCache[message.Chat.ID] = message.Text
-							bot.platformCache[message.Chat.ID] = string(platformInfo.Type)
-							log.Printf("💾 Сохранил в кэш: %d форматов, URL: %s, платформа: %s для чата %d", len(formats), message.Text, platformInfo.Type, message.Chat.ID)
+							bot.formatCache[chatID] = formats
+							bot.videoURLCache[chatID] = url
+							bot.platformCache[chatID] = string(platform.Type)
+							log.Printf("💾 Сохранил в кэш: %d форматов, URL: %s, платформа: %s для чата %d", len(formats), url, platform.Type, chatID)
 							
 							// Разделяем форматы на аудио и видео
 							var audioFormats []services.VideoFormat
@@ -1269,7 +1398,7 @@ func main() {
 							
 							// НЕ скачиваем автоматически - ждем команду пользователя
 							log.Printf("⏸️ Ожидаю выбор пользователя...")
-						}()
+						}(message.Text, message.Chat.ID, *platformInfo)
 					} else if message.Text == "best" || message.Text == "1" {
 						// Пользователь выбрал формат - скачиваем
 						log.Printf("🎯 Пользователь выбрал формат: %s", message.Text)
@@ -1672,14 +1801,9 @@ func isValidVideoURL(url string) bool {
 		return false
 	}
 	
-	// Проверяем все поддерживаемые платформы
+	// Проверяем только YouTube платформы
 	supportedPatterns := []string{
 		"youtube.com", "youtu.be",           // YouTube
-		"tiktok.com", "vm.tiktok.com",       // TikTok
-		"instagram.com",                     // Instagram
-		"vk.com",                            // VKontakte
-		"twitter.com", "x.com",              // Twitter/X
-		"facebook.com", "fb.watch",          // Facebook
 	}
 	
 	for _, pattern := range supportedPatterns {

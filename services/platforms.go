@@ -13,11 +13,6 @@ type PlatformType string
 const (
 	PlatformYouTube     PlatformType = "youtube"
 	PlatformYouTubeShorts PlatformType = "youtube_shorts"
-	PlatformTikTok      PlatformType = "tiktok"
-	PlatformInstagram   PlatformType = "instagram"
-	PlatformVK          PlatformType = "vkontakte"
-	PlatformTwitter     PlatformType = "twitter"
-	PlatformFacebook    PlatformType = "facebook"
 	PlatformUnknown     PlatformType = "unknown"
 )
 
@@ -47,28 +42,6 @@ func NewPlatformDetector() *PlatformDetector {
 			},
 			PlatformYouTubeShorts: {
 				`youtube\.com/shorts/([a-zA-Z0-9_-]{11})`,
-			},
-			PlatformTikTok: {
-				`tiktok\.com/@[^/]+/video/(\d+)`,
-				`vm\.tiktok\.com/([a-zA-Z0-9]+)`,
-				`tiktok\.com/t/([a-zA-Z0-9]+)`,
-			},
-			PlatformInstagram: {
-				`instagram\.com/p/([a-zA-Z0-9_-]+)`,
-				`instagram\.com/reel/([a-zA-Z0-9_-]+)`,
-				`instagram\.com/tv/([a-zA-Z0-9_-]+)`,
-			},
-			PlatformVK: {
-				`vk\.com/video(-?\d+_\d+)`,
-				`vk\.com/videos(-?\d+_\d+)`,
-			},
-			PlatformTwitter: {
-				`twitter\.com/\w+/status/(\d+)`,
-				`x\.com/\w+/status/(\d+)`,
-			},
-			PlatformFacebook: {
-				`facebook\.com/\w+/videos/(\d+)`,
-				`fb\.watch/([a-zA-Z0-9_-]+)`,
 			},
 		},
 	}
@@ -110,11 +83,6 @@ func (pd *PlatformDetector) getDisplayName(platformType PlatformType) string {
 	names := map[PlatformType]string{
 		PlatformYouTube:       "YouTube",
 		PlatformYouTubeShorts: "YouTube Shorts",
-		PlatformTikTok:        "TikTok",
-		PlatformInstagram:     "Instagram",
-		PlatformVK:            "VKontakte",
-		PlatformTwitter:       "Twitter/X",
-		PlatformFacebook:      "Facebook",
 		PlatformUnknown:       "Неизвестная платформа",
 	}
 	return names[platformType]
@@ -125,11 +93,6 @@ func (pd *PlatformDetector) getIcon(platformType PlatformType) string {
 	icons := map[PlatformType]string{
 		PlatformYouTube:       "🎬",
 		PlatformYouTubeShorts: "🎬",
-		PlatformTikTok:        "🎵",
-		PlatformInstagram:     "📸",
-		PlatformVK:            "🔵",
-		PlatformTwitter:       "🐦",
-		PlatformFacebook:      "📘",
 		PlatformUnknown:       "❓",
 	}
 	return icons[platformType]
@@ -140,11 +103,6 @@ func (pd *PlatformDetector) isSupported(platformType PlatformType) bool {
 	supported := map[PlatformType]bool{
 		PlatformYouTube:       true,
 		PlatformYouTubeShorts: true,
-		PlatformTikTok:        true,
-		PlatformInstagram:     true,
-		PlatformVK:            true,
-		PlatformTwitter:       true,
-		PlatformFacebook:      true,
 		PlatformUnknown:       false,
 	}
 	return supported[platformType]
@@ -186,42 +144,7 @@ func (pd *PlatformDetector) GetYtDlpArgs(platformType PlatformType) []string {
 	switch platformType {
 	case PlatformYouTube, PlatformYouTubeShorts:
 		// Стандартные аргументы для YouTube
-		args = append(args, "--format", "best[ext=mp4]/best")
-		
-	case PlatformTikTok:
-		// Специальные аргументы для TikTok
-		args = append(args, 
-			"--format", "best",
-			"--extractor-args", "tiktok:webpage_url_basename=video",
-		)
-		
-	case PlatformInstagram:
-		// Специальные аргументы для Instagram
-		args = append(args,
-			"--format", "best",
-			"--extractor-args", "instagram:webpage_url_basename=reel",
-		)
-		
-	case PlatformVK:
-		// Специальные аргументы для VK
-		args = append(args,
-			"--format", "best",
-			"--extractor-args", "vkontakte:webpage_url_basename=video",
-		)
-		
-	case PlatformTwitter:
-		// Специальные аргументы для Twitter
-		args = append(args,
-			"--format", "best",
-			"--extractor-args", "twitter:webpage_url_basename=status",
-		)
-		
-	case PlatformFacebook:
-		// Специальные аргументы для Facebook
-		args = append(args,
-			"--format", "best",
-			"--extractor-args", "facebook:webpage_url_basename=videos",
-		)
+		args = append(args, "--format", "best[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]+bestaudio/best")
 		
 	default:
 		// Универсальные аргументы
@@ -236,11 +159,6 @@ func (pd *PlatformDetector) GetVideoTitle(platformType PlatformType, videoID str
 	titles := map[PlatformType]string{
 		PlatformYouTube:       fmt.Sprintf("YouTube Video %s", videoID),
 		PlatformYouTubeShorts: fmt.Sprintf("YouTube Short %s", videoID),
-		PlatformTikTok:        fmt.Sprintf("TikTok Video %s", videoID),
-		PlatformInstagram:     fmt.Sprintf("Instagram Reel %s", videoID),
-		PlatformVK:            fmt.Sprintf("VK Video %s", videoID),
-		PlatformTwitter:       fmt.Sprintf("Twitter Video %s", videoID),
-		PlatformFacebook:      fmt.Sprintf("Facebook Video %s", videoID),
 		PlatformUnknown:       fmt.Sprintf("Video %s", videoID),
 	}
 	return titles[platformType]

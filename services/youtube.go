@@ -2,6 +2,7 @@ package services
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"log"
 	"os"
@@ -23,6 +24,17 @@ type VideoFormat struct {
 	FPS        string
 	HasAudio   bool
 	FileSize   string
+}
+
+// VideoMetadata представляет метаданные видео
+type VideoMetadata struct {
+	Title       string
+	Author      string
+	Duration    string
+	Views       string
+	Description string
+	Thumbnail   string
+	UploadDate  string
 }
 
 // YouTubeService предоставляет методы для работы с YouTube
@@ -954,4 +966,193 @@ func (s *YouTubeService) parseFileSize(fileSize string) int64 {
 	}
 	
 	return 0
+}
+
+// GetVideoMetadata получает метаданные видео (название, автор, длительность, просмотры)
+func (s *YouTubeService) GetVideoMetadata(url string) (*VideoMetadata, error) {
+	log.Printf("📊 Получение метаданных для: %s", url)
+	
+	// Получаем аргументы прокси
+	proxyArgs := getProxyArgs()
+	
+	// Команда yt-dlp для получения метаданных
+	args := []string{
+		"--dump-json",           // Получаем JSON с метаданными
+		"--no-playlist",         // Только одно видео
+		"--no-check-certificates",
+		"--no-warnings",
+		"--quiet",
+	}
+	
+	// Добавляем аргументы прокси
+	args = append(args, proxyArgs...)
+	args = append(args, url)
+	
+	cmd := exec.Command(getYtDlpPath(), args...)
+	
+	log.Printf("🚀 Выполняю команду для метаданных: %s", strings.Join(cmd.Args, " "))
+	
+	// Запускаем команду
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("❌ Ошибка получения метаданных: %s", string(output))
+		return nil, fmt.Errorf("ошибка получения метаданных: %v", err)
+	}
+	
+	// Парсим JSON ответ
+	metadata, err := s.parseVideoMetadata(string(output))
+	if err != nil {
+		return nil, fmt.Errorf("ошибка парсинга метаданных: %v", err)
+	}
+	
+	log.Printf("✅ Метаданные получены: %s - %s", metadata.Title, metadata.Author)
+	log.Printf("🖼️ Миниатюра: %s", metadata.Thumbnail)
+	log.Printf("⏱️ Длительность: %s", metadata.Duration)
+	log.Printf("👁️ Просмотры: %s", metadata.Views)
+	return metadata, nil
+}
+
+// parseVideoMetadata парсит JSON ответ yt-dlp и извлекает метаданные
+func (s *YouTubeService) parseVideoMetadata(jsonOutput string) (*VideoMetadata, error) {
+	// Парсим JSON
+	var data map[string]interface{}
+	if err := json.Unmarshal([]byte(jsonOutput), &data); err != nil {
+		return nil, fmt.Errorf("ошибка парсинга JSON: %v", err)
+	}
+	
+	// Логируем ключи JSON для отладки
+	log.Printf("🔍 Ключи в JSON ответе: %v", getKeys(data))
+	
+	metadata := &VideoMetadata{}
+	
+	// Извлекаем название
+	if title, ok := data["title"].(string); ok {
+		metadata.Title = title
+	}
+	
+	// Извлекаем автора
+	if uploader, ok := data["uploader"].(string); ok {
+		metadata.Author = uploader
+	}
+	
+	// Извлекаем длительность
+	if duration, ok := data["duration"].(float64); ok {
+		metadata.Duration = s.formatDuration(int(duration))
+	}
+	
+	// Извлекаем количество просмотров
+	if viewCount, ok := data["view_count"].(float64); ok {
+		metadata.Views = s.formatViews(int64(viewCount))
+	}
+	
+	// Извлекаем описание
+	if description, ok := data["description"].(string); ok {
+		// Ограничиваем описание до 200 символов
+		if len(description) > 200 {
+			metadata.Description = description[:200] + "..."
+		} else {
+			metadata.Description = description
+		}
+	}
+	
+	// Извлекаем миниатюру (берем лучшую по качеству)
+	if thumbnails, ok := data["thumbnails"].([]interface{}); ok && len(thumbnails) > 0 {
+		// Ищем миниатюру с максимальным разрешением
+		var bestThumbnail string
+		var maxWidth int
+		
+		for _, thumb := range thumbnails {
+			if thumbMap, ok := thumb.(map[string]interface{}); ok {
+				if url, ok := thumbMap["url"].(string); ok {
+					// Если есть информация о ширине - используем её
+					if width, ok := thumbMap["width"].(float64); ok {
+						if int(width) > maxWidth {
+							maxWidth = int(width)
+							bestThumbnail = url
+						}
+					} else {
+						// Если нет информации о ширине - берем первую
+						if bestThumbnail == "" {
+							bestThumbnail = url
+						}
+					}
+				}
+			}
+		}
+		
+		if bestThumbnail != "" {
+			metadata.Thumbnail = bestThumbnail
+			log.Printf("🖼️ Выбрана миниатюра: %s (ширина: %dpx)", bestThumbnail, maxWidth)
+		}
+	} else {
+		// Альтернативный способ - используем thumbnail из корня JSON
+		if thumbnail, ok := data["thumbnail"].(string); ok && thumbnail != "" {
+			metadata.Thumbnail = thumbnail
+			log.Printf("🖼️ Использована основная миниатюра: %s", thumbnail)
+		} else {
+			log.Printf("⚠️ Миниатюра не найдена в JSON ответе")
+		}
+	}
+	
+	// Извлекаем дату загрузки
+	if uploadDate, ok := data["upload_date"].(string); ok {
+		metadata.UploadDate = s.formatUploadDate(uploadDate)
+	}
+	
+	return metadata, nil
+}
+
+// formatDuration форматирует длительность в читаемый вид
+func (s *YouTubeService) formatDuration(seconds int) string {
+	if seconds < 60 {
+		return fmt.Sprintf("%d сек", seconds)
+	} else if seconds < 3600 {
+		minutes := seconds / 60
+		remainingSeconds := seconds % 60
+		if remainingSeconds == 0 {
+			return fmt.Sprintf("%d мин", minutes)
+		}
+		return fmt.Sprintf("%d мин %d сек", minutes, remainingSeconds)
+	} else {
+		hours := seconds / 3600
+		minutes := (seconds % 3600) / 60
+		if minutes == 0 {
+			return fmt.Sprintf("%d ч", hours)
+		}
+		return fmt.Sprintf("%d ч %d мин", hours, minutes)
+	}
+}
+
+// formatViews форматирует количество просмотров
+func (s *YouTubeService) formatViews(views int64) string {
+	if views < 1000 {
+		return fmt.Sprintf("%d", views)
+	} else if views < 1000000 {
+		return fmt.Sprintf("%.1fK", float64(views)/1000)
+	} else if views < 1000000000 {
+		return fmt.Sprintf("%.1fM", float64(views)/1000000)
+	} else {
+		return fmt.Sprintf("%.1fB", float64(views)/1000000000)
+	}
+}
+
+// formatUploadDate форматирует дату загрузки
+func (s *YouTubeService) formatUploadDate(uploadDate string) string {
+	// Формат: YYYYMMDD
+	if len(uploadDate) >= 8 {
+		year := uploadDate[:4]
+		month := uploadDate[4:6]
+		day := uploadDate[6:8]
+		return fmt.Sprintf("%s.%s.%s", day, month, year)
+	}
+	return uploadDate
+}
+
+// getKeys возвращает ключи из map для отладки
+func getKeys(data map[string]interface{}) []string {
+	keys := make([]string, 0, len(data))
+	for k := range data {
+		keys = append(keys, k)
+	}
+	return keys
 }
