@@ -646,6 +646,76 @@ func (b *LocalBot) SendVideo(chatID int64, videoPath, caption string) error {
 	return nil
 }
 
+// SendAudio отправляет аудио файл
+func (b *LocalBot) SendAudio(chatID int64, audioPath, caption string) error {
+	log.Printf("🎵 Отправляю аудио: chatID=%d, path=%s", chatID, audioPath)
+	
+	file, err := os.Open(audioPath)
+	if err != nil {
+		return fmt.Errorf("ошибка открытия файла: %v", err)
+	}
+	defer file.Close()
+
+	// Получаем информацию о файле
+	fileInfo, err := file.Stat()
+	if err != nil {
+		return fmt.Errorf("ошибка получения информации о файле: %v", err)
+	}
+
+	// Создаем multipart form
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+
+	// Добавляем chat_id
+	writer.WriteField("chat_id", fmt.Sprintf("%d", chatID))
+	
+	// Caption
+	writer.WriteField("caption", caption)
+
+	// Добавляем длительность (в секундах)
+	duration := b.getVideoDuration(audioPath)
+	if duration > 0 {
+		writer.WriteField("duration", fmt.Sprintf("%d", duration))
+		log.Printf("⏱️ Установлена длительность: %d секунд", duration)
+	}
+
+	// Добавляем размер файла
+	writer.WriteField("file_size", fmt.Sprintf("%d", fileInfo.Size()))
+
+	// Добавляем файл
+	part, err := writer.CreateFormFile("audio", filepath.Base(audioPath))
+	if err != nil {
+		return fmt.Errorf("ошибка создания form file: %v", err)
+	}
+
+	_, err = io.Copy(part, file)
+	if err != nil {
+		return fmt.Errorf("ошибка копирования файла: %v", err)
+	}
+
+	writer.Close()
+
+	// Отправляем запрос
+	resp, err := b.Client.Post(
+		fmt.Sprintf("%s/bot%s/sendAudio", b.APIURL, b.Token),
+		writer.FormDataContentType(),
+		&buf,
+	)
+	if err != nil {
+		return fmt.Errorf("ошибка отправки аудио: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("❌ Ошибка sendAudio: %d, ответ: %s", resp.StatusCode, string(body))
+		return fmt.Errorf("неуспешный статус sendAudio: %d, ответ: %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("✅ Аудио отправлено успешно")
+	return nil
+}
+
 // getVideoDuration получает длительность видео в секундах
 func (b *LocalBot) getVideoDuration(videoPath string) int {
 	// Используем ffprobe для получения длительности
@@ -2114,8 +2184,8 @@ func main() {
 									
 									// Отправляем файл в Telegram
 									if isAudio {
-										// Для аудио файлов
-										if err := bot.SendVideo(callback.Message.Chat.ID, videoPath, caption); err != nil {
+										// Для аудио файлов используем SendAudio
+										if err := bot.SendAudio(callback.Message.Chat.ID, videoPath, caption); err != nil {
 											log.Printf("❌ Ошибка отправки аудио: %v", err)
 											bot.SendMessage(callback.Message.Chat.ID, fmt.Sprintf("❌ Ошибка отправки: %v", err))
 											// Удаляем файл при ошибке
@@ -2343,7 +2413,7 @@ func (b *LocalBot) validateVideoFile(videoPath string) bool {
 	
 	// Проверяем расширение файла
 	ext := strings.ToLower(filepath.Ext(videoPath))
-	allowedExts := []string{".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v"}
+	allowedExts := []string{".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".mp3", ".m4a", ".ogg"}
 	isValidExt := false
 	for _, allowedExt := range allowedExts {
 		if ext == allowedExt {

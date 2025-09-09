@@ -1,0 +1,27 @@
+[Unit]
+Description=YouTube Bot Telegram Service
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=gunster1998
+Group=gunster1998
+WorkingDirectory=/home/gunster1998/repos/youtubeBot
+ExecStart=/home/gunster1998/repos/youtubeBot/youtubeBot
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=youtubebot
+
+# Ограничения ресурсов
+LimitNOFILE=65536
+LimitNPROC=4096
+
+# Переменные окружения
+Environment=GOMAXPROCS=4
+Environment=GOGC=100
+
+[Install]
+WantedBy=multi-user.target

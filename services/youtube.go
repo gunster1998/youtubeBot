@@ -272,6 +272,11 @@ func (s *YouTubeService) parseVideoFormats(output string) ([]VideoFormat, error)
 					formatType = "audio"
 					hasAudio = true
 					log.Printf("🎵 Обнаружен аудио формат (по тексту): ID %s", parts[0])
+				} else if strings.Contains(line, "webm") && strings.Contains(line, "audio") {
+					// WebM аудио формат
+					formatType = "audio"
+					hasAudio = true
+					log.Printf("🎵 Обнаружен WebM аудио формат: ID %s", parts[0])
 				}
 
 				format := VideoFormat{
@@ -606,6 +611,13 @@ func (s *YouTubeService) DownloadVideoWithFormat(videoURL, formatID string) (str
 			"--retries", "5",          // Больше попыток для больших файлов
 			"--force-overwrites",      // Принудительно перезаписываем существующие файлы
 			"--merge-output-format", "mp4", // Объединяем в MP4 с аудио
+		}
+		
+		// Если это аудиоформат, принудительно конвертируем в MP3
+		// Проверяем по ID формата - если содержит "drc" или другие аудио ID, это аудио
+		if strings.Contains(formatID, "drc") || strings.Contains(formatID, "audio") || strings.Contains(formatID, "bestaudio") {
+			args = append(args, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0")
+			log.Printf("🎵 Обнаружен аудиоформат %s, принудительно конвертирую в MP3", formatID)
 		}
 		
 		// Добавляем аргументы прокси

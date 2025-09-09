@@ -92,6 +92,13 @@ func (us *UniversalService) DownloadVideoWithFormat(url, formatID string) (strin
 		"--retries", "5",
 	}
 	
+	// Если это аудиоформат, принудительно конвертируем в MP3
+	// Проверяем по ID формата - если содержит "drc" или другие аудио ID, это аудио
+	if strings.Contains(formatID, "drc") || strings.Contains(formatID, "audio") || strings.Contains(formatID, "bestaudio") {
+		downloadArgs = append(downloadArgs, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0")
+		log.Printf("🎵 Обнаружен аудиоформат %s, принудительно конвертирую в MP3", formatID)
+	}
+	
 	// Добавляем аргументы прокси
 	proxyArgs := getProxyArgs()
 	
