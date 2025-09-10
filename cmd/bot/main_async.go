@@ -183,6 +183,283 @@ func (b *AsyncLocalBot) SendVideo(chatID int64, videoPath, caption string) error
 	return nil
 }
 
+// SendPhoto отправляет фото с подписью
+func (b *AsyncLocalBot) SendPhoto(chatID int64, photoURL, caption string) error {
+	log.Printf("📸 Отправляю фото: chatID=%d, URL=%s", chatID, photoURL)
+	log.Printf("📸 Подпись: %s", caption)
+	
+	message := map[string]interface{}{
+		"chat_id": chatID,
+		"photo":   photoURL,
+		"caption": caption,
+		"parse_mode": "Markdown",
+	}
+
+	jsonData, err := json.Marshal(message)
+	if err != nil {
+		log.Printf("❌ Ошибка маршалинга: %v", err)
+		return fmt.Errorf("ошибка маршалинга сообщения: %v", err)
+	}
+	
+	log.Printf("📸 JSON данные: %s", string(jsonData))
+
+	resp, err := b.Client.Post(
+		fmt.Sprintf("%s/bot%s/sendPhoto", b.APIURL, b.Token),
+		"application/json",
+		bytes.NewBuffer(jsonData),
+	)
+	if err != nil {
+		log.Printf("❌ Ошибка HTTP запроса: %v", err)
+		return fmt.Errorf("ошибка отправки фото: %v", err)
+	}
+	defer resp.Body.Close()
+
+	log.Printf("📸 HTTP статус: %d", resp.StatusCode)
+	
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("❌ Ошибка ответа: %s", string(body))
+		return fmt.Errorf("неуспешный статус sendPhoto: %d, ответ: %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("✅ Фото отправлено успешно")
+	return nil
+}
+
+// SendPhotoFromFile отправляет фото из локального файла с подписью
+func (b *AsyncLocalBot) SendPhotoFromFile(chatID int64, filePath, caption string) error {
+	log.Printf("📸 Отправляю фото из файла: chatID=%d, filePath=%s", chatID, filePath)
+	log.Printf("📸 Подпись: %s", caption)
+	
+	// Проверяем существование файла
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		log.Printf("❌ Файл не найден: %s", filePath)
+		return fmt.Errorf("файл не найден: %s", filePath)
+	}
+	
+	// Открываем файл
+	file, err := os.Open(filePath)
+	if err != nil {
+		log.Printf("❌ Ошибка открытия файла: %v", err)
+		return fmt.Errorf("ошибка открытия файла: %v", err)
+	}
+	defer file.Close()
+	
+	// Создаем multipart form
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	
+	// Добавляем chat_id
+	writer.WriteField("chat_id", fmt.Sprintf("%d", chatID))
+	
+	// Добавляем caption
+	writer.WriteField("caption", caption)
+	writer.WriteField("parse_mode", "Markdown")
+	
+	// Добавляем файл
+	part, err := writer.CreateFormFile("photo", filepath.Base(filePath))
+	if err != nil {
+		log.Printf("❌ Ошибка создания form file: %v", err)
+		return fmt.Errorf("ошибка создания form file: %v", err)
+	}
+	
+	_, err = io.Copy(part, file)
+	if err != nil {
+		log.Printf("❌ Ошибка копирования файла: %v", err)
+		return fmt.Errorf("ошибка копирования файла: %v", err)
+	}
+	
+	writer.Close()
+	
+	// Отправляем запрос
+	req, err := http.NewRequest("POST", 
+		fmt.Sprintf("%s/bot%s/sendPhoto", b.APIURL, b.Token), &buf)
+	if err != nil {
+		log.Printf("❌ Ошибка создания запроса: %v", err)
+		return fmt.Errorf("ошибка создания запроса: %v", err)
+	}
+	
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	
+	resp, err := b.Client.Do(req)
+	if err != nil {
+		log.Printf("❌ Ошибка HTTP запроса: %v", err)
+		return fmt.Errorf("ошибка отправки фото: %v", err)
+	}
+	defer resp.Body.Close()
+
+	log.Printf("📸 HTTP статус: %d", resp.StatusCode)
+	
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("❌ Ошибка ответа: %s", string(body))
+		return fmt.Errorf("неуспешный статус sendPhoto: %d, ответ: %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("✅ Фото из файла отправлено успешно")
+	return nil
+}
+
+// SendMediaGroup отправляет группу медиафайлов (фото/видео) одним сообщением
+func (b *AsyncLocalBot) SendMediaGroup(chatID int64, mediaFiles []string) error {
+	log.Printf("📸 Отправляю медиагруппу: chatID=%d, файлов=%d", chatID, len(mediaFiles))
+	
+	if len(mediaFiles) == 0 {
+		return fmt.Errorf("нет файлов для отправки")
+	}
+	
+	// Создаем multipart form
+	var buf bytes.Buffer
+	writer := multipart.NewWriter(&buf)
+	
+	// Добавляем chat_id
+	writer.WriteField("chat_id", fmt.Sprintf("%d", chatID))
+	
+	// Создаем массив медиафайлов
+	var mediaArray []map[string]interface{}
+	for i, filePath := range mediaFiles {
+		// Проверяем существование файла
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			log.Printf("⚠️ Файл не найден: %s", filePath)
+			continue
+		}
+		
+		mediaItem := map[string]interface{}{
+			"type": "photo",
+			"media": fmt.Sprintf("attach://photo_%d", i),
+		}
+		mediaArray = append(mediaArray, mediaItem)
+	}
+	
+	if len(mediaArray) == 0 {
+		return fmt.Errorf("нет валидных файлов для отправки")
+	}
+	
+	// Добавляем media как JSON
+	mediaJSON, err := json.Marshal(mediaArray)
+	if err != nil {
+		return fmt.Errorf("ошибка маршалинга media: %v", err)
+	}
+	writer.WriteField("media", string(mediaJSON))
+	
+	// Добавляем файлы
+	for i, filePath := range mediaFiles {
+		if _, err := os.Stat(filePath); os.IsNotExist(err) {
+			continue
+		}
+		
+		file, err := os.Open(filePath)
+		if err != nil {
+			log.Printf("❌ Ошибка открытия файла %s: %v", filePath, err)
+			continue
+		}
+		
+		part, err := writer.CreateFormFile(fmt.Sprintf("photo_%d", i), filepath.Base(filePath))
+		if err != nil {
+			file.Close()
+			log.Printf("❌ Ошибка создания form file: %v", err)
+			continue
+		}
+		
+		_, err = io.Copy(part, file)
+		file.Close()
+		if err != nil {
+			log.Printf("❌ Ошибка копирования файла: %v", err)
+			continue
+		}
+	}
+	
+	writer.Close()
+	
+	// Отправляем запрос
+	req, err := http.NewRequest("POST", 
+		fmt.Sprintf("%s/bot%s/sendMediaGroup", b.APIURL, b.Token), &buf)
+	if err != nil {
+		log.Printf("❌ Ошибка создания запроса: %v", err)
+		return fmt.Errorf("ошибка создания запроса: %v", err)
+	}
+	
+	req.Header.Set("Content-Type", writer.FormDataContentType())
+	
+	resp, err := b.Client.Do(req)
+	if err != nil {
+		log.Printf("❌ Ошибка HTTP запроса: %v", err)
+		return fmt.Errorf("ошибка отправки медиагруппы: %v", err)
+	}
+	defer resp.Body.Close()
+
+	log.Printf("📸 HTTP статус: %d", resp.StatusCode)
+	
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		log.Printf("❌ Ошибка ответа: %s", string(body))
+		return fmt.Errorf("неуспешный статус sendMediaGroup: %d, ответ: %s", resp.StatusCode, string(body))
+	}
+
+	log.Printf("✅ Медиагруппа отправлена успешно")
+	return nil
+}
+
+// SendWelcomeMessageWithImages отправляет приветственное сообщение с изображениями
+func (b *AsyncLocalBot) SendWelcomeMessageWithImages(chatID int64) error {
+	// Отправляем текстовое приветственное сообщение
+	welcomeText := `🎬 Привет! Я ChillYouTube Bot!
+
+📋 Доступные команды:
+/start - Начать работу
+/help - Справка
+/status - Статус бота
+/info - Информация о боте
+/ping - Проверка отзывчивости
+/version - Информация о версии
+
+🎯 Поддерживаемые платформы:
+🎬 YouTube
+🎬 YouTube Shorts
+
+🔗 Отправьте ссылку на YouTube видео для скачивания.
+
+Как это работает? 🔽`
+	
+	// Сначала пробуем отправить обложку с подписью
+	coverPath := "assets/images/welcome_cover.png"
+	if err := b.SendPhotoFromFile(chatID, coverPath, welcomeText); err != nil {
+		log.Printf("⚠️ Не удалось отправить обложку (%v). Отправляю текстовое приветствие.", err)
+		if err := b.SendMessage(chatID, welcomeText); err != nil {
+			log.Printf("❌ Ошибка отправки приветственного сообщения: %v", err)
+			return err
+		}
+	}
+	
+	// Отправляем три изображения как медиагруппу (одним сообщением)
+	imageFiles := []string{
+		"assets/images/step1_send_link.png",
+		"assets/images/step2_choose_format.png", 
+		"assets/images/step3_done.png",
+	}
+	
+	// Отправляем медиагруппу
+	if err := b.SendMediaGroup(chatID, imageFiles); err != nil {
+		log.Printf("❌ Ошибка отправки медиагруппы: %v", err)
+		// Fallback: отправляем изображения по одному
+		log.Printf("🔄 Fallback: отправляю изображения по одному...")
+		for i, filePath := range imageFiles {
+			captions := []string{
+				"**1. Отправьте ссылку на видео**\n\nОтправьте ссылку на YouTube видео",
+				"**2. Выберите формат видео 4K**\n\nВыберите качество из списка", 
+				"**3. Готово!**\n\nВидео успешно скачано и отправлено",
+			}
+			if err := b.SendPhotoFromFile(chatID, filePath, captions[i]); err != nil {
+				log.Printf("❌ Ошибка отправки изображения %d: %v", i+1, err)
+			}
+			time.Sleep(500 * time.Millisecond)
+		}
+	}
+	
+	log.Printf("✅ Приветственное сообщение с изображениями отправлено успешно")
+	return nil
+}
+
 // GetUpdates получает обновления от Telegram
 func (b *AsyncLocalBot) GetUpdates(offset, limit, timeout int) ([]Update, error) {
 	resp, err := b.Client.Get(fmt.Sprintf("%s/bot%s/getUpdates?offset=%d&limit=%d&timeout=%d", 
@@ -822,7 +1099,8 @@ func main() {
 					
 					// Обрабатываем команды
 					if message.Text == "/start" {
-						bot.SendMessage(message.Chat.ID, "Привет! Отправьте ссылку на YouTube видео для скачивания.")
+						// Отправляем приветственное сообщение с изображениями
+						bot.SendWelcomeMessageWithImages(message.Chat.ID)
 					} else if len(message.Text) > 10 && (strings.Contains(message.Text, "youtube.com") || strings.Contains(message.Text, "youtu.be")) {
 						// YouTube ссылка - обрабатываем асинхронно
 						bot.handleYouTubeLink(message.Chat.ID, message.Text)
