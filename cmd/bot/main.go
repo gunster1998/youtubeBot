@@ -2534,7 +2534,42 @@ func main() {
 										}
 									}
 									
-									// Отправляем файл в Telegram
+									// СНАЧАЛА сохраняем файл в кэш (ПЕРЕД отправкой)
+									// Получаем информацию о файле
+									fileInfo, err := os.Stat(videoPath)
+									if err != nil {
+										log.Printf("⚠️ Не удалось получить информацию о файле: %v", err)
+									} else {
+										// Находим формат для получения разрешения
+										formats, exists := bot.getFormatCache(callback.Message.Chat.ID)
+										var resolution string
+										if exists {
+											for _, f := range formats {
+												if f.ID == formatID {
+													resolution = f.Resolution
+													break
+												}
+											}
+										}
+										
+										// Определяем тип контента для заголовка
+										var contentType string
+										if isAudio {
+											contentType = "Audio"
+										} else {
+											contentType = "Video"
+										}
+										
+										// Добавляем в кэш
+										title := bot.universalService.GetPlatformInfo(videoURL).DisplayName + " " + contentType
+										if err := bot.cacheService.AddToCache(videoID, platform, videoURL, title, formatID, resolution, videoPath, fileInfo.Size()); err != nil {
+											log.Printf("⚠️ Не удалось добавить в кэш: %v", err)
+										} else {
+											log.Printf("💾 %s добавлено в кэш: %s (%s)", contentType, videoID, formatID)
+										}
+									}
+									
+									// ПОТОМ отправляем файл в Telegram
 									if isAudio {
 										// Для аудио файлов используем SendAudio
 										if err := bot.SendAudio(callback.Message.Chat.ID, videoPath, caption); err != nil {
@@ -2568,41 +2603,6 @@ func main() {
 											log.Printf("⚠️ Не удалось удалить видео файл: %v", err)
 										} else {
 											log.Printf("🗑️ Видео файл удален: %s", videoPath)
-										}
-									}
-									
-									// Сохраняем файл в кэш (и видео, и аудио)
-									// Получаем информацию о файле
-									fileInfo, err := os.Stat(videoPath)
-									if err != nil {
-										log.Printf("⚠️ Не удалось получить информацию о файле: %v", err)
-									} else {
-										// Находим формат для получения разрешения
-										formats, exists := bot.getFormatCache(callback.Message.Chat.ID)
-										var resolution string
-										if exists {
-											for _, f := range formats {
-												if f.ID == formatID {
-													resolution = f.Resolution
-													break
-												}
-											}
-										}
-										
-										// Определяем тип контента для заголовка
-										var contentType string
-										if isAudio {
-											contentType = "Audio"
-										} else {
-											contentType = "Video"
-										}
-										
-										// Добавляем в кэш
-										title := bot.universalService.GetPlatformInfo(videoURL).DisplayName + " " + contentType
-										if err := bot.cacheService.AddToCache(videoID, platform, videoURL, title, formatID, resolution, videoPath, fileInfo.Size()); err != nil {
-											log.Printf("⚠️ Не удалось добавить в кэш: %v", err)
-										} else {
-											log.Printf("💾 %s добавлено в кэш: %s (%s)", contentType, videoID, formatID)
 										}
 									}
 								} else {
