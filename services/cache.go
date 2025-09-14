@@ -256,7 +256,7 @@ func (cs *CacheService) GetVideoFormats(videoID, platform string) (bool, []Video
 	
 	query := `SELECT id, video_id, platform, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at 
 			  FROM video_cache 
-			  WHERE video_id = ? AND platform = ? AND file_path IS NOT NULL AND file_path != ''`
+			  WHERE video_id = ? AND platform = ?`
 	
 	rows, err := cs.db.Query(query, videoID, platform)
 	if err != nil {
