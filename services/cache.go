@@ -277,15 +277,11 @@ func (cs *CacheService) GetVideoFormats(videoID, platform string) (bool, []Video
 			continue
 		}
 		
-		// Проверяем, существует ли файл
-		if _, err := os.Stat(video.FilePath); os.IsNotExist(err) {
-			log.Printf("⚠️ Файл не существует, пропускаем: %s", video.FilePath)
-			continue
-		}
-		
+		log.Printf("📦 Найден в кэше: videoID=%s, formatID=%s, filePath=%s", video.VideoID, video.FormatID, video.FilePath)
 		videos = append(videos, video)
 	}
 	
+	log.Printf("📊 GetVideoFormats результат: найдено %d форматов для videoID=%s", len(videos), videoID)
 	return len(videos) > 0, videos, nil
 }
 
