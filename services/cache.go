@@ -404,9 +404,14 @@ func (cs *CacheService) ensureCacheSize(newFileSize int64) error {
 	return nil
 }
 
-// cleanupOldFiles очищает файлы старше 30 дней
+// CleanupOldFiles публичный метод для очистки старых файлов
+func (cs *CacheService) CleanupOldFiles() error {
+	return cs.cleanupOldFiles()
+}
+
+// cleanupOldFiles очищает файлы старше 7 дней
 func (cs *CacheService) cleanupOldFiles() error {
-	query := `SELECT id, file_path FROM video_cache WHERE last_download < datetime('now', '-30 days')`
+	query := `SELECT id, file_path FROM video_cache WHERE last_download < datetime('now', '-7 days')`
 	rows, err := cs.db.Query(query)
 	if err != nil {
 		return fmt.Errorf("ошибка получения старых файлов: %v", err)

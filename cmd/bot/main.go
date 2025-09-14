@@ -1627,8 +1627,8 @@ func main() {
 			fmt.Printf("\n🛑 Получен сигнал завершения, завершаю работу...\n")
 			return
 		default:
-			// Периодическая очистка кэша (каждые 6 часов)
-			if time.Since(lastCleanup) > 6*time.Hour {
+			// Периодическая очистка кэша (каждые 12 часов)
+			if time.Since(lastCleanup) > 12*time.Hour {
 				CleanupCache(bot)
 				lastCleanup = time.Now()
 			}
@@ -3102,6 +3102,11 @@ func HealthCheck(youtubeService *services.YouTubeService, cacheService *services
 // CleanupCache очищает старые данные кэша
 func CleanupCache(bot *LocalBot) {
 	log.Println("🧹 Запуск очистки кэша...")
+	
+	// Очищаем старые файлы (старше 7 дней)
+	if err := bot.cacheService.CleanupOldFiles(); err != nil {
+		log.Printf("⚠️ Не удалось очистить старые файлы: %v", err)
+	}
 	
 	// Очищаем старые данные из памяти
 	clearedChats := 0
