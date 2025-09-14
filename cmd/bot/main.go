@@ -2399,7 +2399,7 @@ func main() {
 									
 									// Определяем тип файла по расширению
 									fileExt := strings.ToLower(filepath.Ext(videoPath))
-									isAudio := fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".webm" || fileExt == ".ogg"
+									isAudio := fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".ogg"
 									
 									// Получаем метаданные для красивого caption
 									var metadata *services.VideoMetadata
@@ -2684,7 +2684,7 @@ func (b *LocalBot) validateVideoFile(videoPath string) bool {
 	
 	// Проверяем расширение файла
 	ext := strings.ToLower(filepath.Ext(videoPath))
-	allowedExts := []string{".mp4", ".avi", ".mov", ".mkv", ".webm", ".m4v", ".mp3", ".m4a", ".ogg"}
+	allowedExts := []string{".mp4", ".avi", ".mov", ".mkv", ".m4v", ".mp3", ".m4a", ".ogg"}
 	isValidExt := false
 	for _, allowedExt := range allowedExts {
 		if ext == allowedExt {

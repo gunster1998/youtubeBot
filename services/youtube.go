@@ -278,10 +278,10 @@ func (s *YouTubeService) parseVideoFormats(output string) ([]VideoFormat, error)
 					hasAudio = true
 					log.Printf("🎵 Обнаружен аудио формат (по тексту): ID %s", parts[0])
 				} else if strings.Contains(line, "webm") && strings.Contains(line, "audio") {
-					// WebM аудио формат
+					// WebM аудио формат - принудительно конвертируем в MP3
 					formatType = "audio"
 					hasAudio = true
-					log.Printf("🎵 Обнаружен WebM аудио формат: ID %s", parts[0])
+					log.Printf("🎵 Обнаружен WebM аудио формат: ID %s - будет конвертирован в MP3", parts[0])
 				}
 
 				format := VideoFormat{
@@ -445,9 +445,9 @@ func (s *YouTubeService) filterTelegramCompatibleFormats(formats []VideoFormat) 
 
 // isTelegramCompatible проверяет совместимость формата с Telegram
 func (s *YouTubeService) isTelegramCompatible(format VideoFormat) bool {
-	// Разрешаем все аудио форматы (включая webm)
+	// Разрешаем все аудио форматы (webm будет конвертирован в mp3)
 	if format.Extension == "audio" {
-		log.Printf("✅ Аудио формат %s совместим с Telegram: %s (размер: %s)", 
+		log.Printf("✅ Аудио формат %s совместим с Telegram: %s (размер: %s) - будет конвертирован в MP3", 
 			format.ID, format.Resolution, format.FileSize)
 		return true
 	}
@@ -619,8 +619,8 @@ func (s *YouTubeService) DownloadVideoWithFormat(videoURL, formatID string) (str
 		}
 		
 		// Если это аудиоформат, принудительно конвертируем в MP3
-		// Проверяем по ID формата - если содержит "drc" или другие аудио ID, это аудио
-		if strings.Contains(formatID, "drc") || strings.Contains(formatID, "audio") || strings.Contains(formatID, "bestaudio") {
+		// Проверяем по ID формата - если содержит "drc", "audio", "webm" или другие аудио ID, это аудио
+		if strings.Contains(formatID, "drc") || strings.Contains(formatID, "audio") || strings.Contains(formatID, "bestaudio") || strings.Contains(formatID, "webm") {
 			args = append(args, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0")
 			log.Printf("🎵 Обнаружен аудиоформат %s, принудительно конвертирую в MP3", formatID)
 		}

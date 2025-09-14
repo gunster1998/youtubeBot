@@ -93,8 +93,8 @@ func (us *UniversalService) DownloadVideoWithFormat(url, formatID string) (strin
 	}
 	
 	// Если это аудиоформат, принудительно конвертируем в MP3
-	// Проверяем по ID формата - если содержит "drc" или другие аудио ID, это аудио
-	if strings.Contains(formatID, "drc") || strings.Contains(formatID, "audio") || strings.Contains(formatID, "bestaudio") {
+	// Проверяем по ID формата - если содержит "drc", "audio", "webm" или другие аудио ID, это аудио
+	if strings.Contains(formatID, "drc") || strings.Contains(formatID, "audio") || strings.Contains(formatID, "bestaudio") || strings.Contains(formatID, "webm") {
 		downloadArgs = append(downloadArgs, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0")
 		log.Printf("🎵 Обнаружен аудиоформат %s, принудительно конвертирую в MP3", formatID)
 	}
@@ -157,6 +157,11 @@ func (us *UniversalService) parseVideoFormats(output string, platformType Platfo
 			if len(parts) >= 4 && (parts[1] == "mp4" || parts[1] == "webm" || parts[1] == "audio" || 
 			   strings.Contains(parts[1], "video") || strings.Contains(parts[1], "audio")) {
 				
+				// Если это webm аудио - помечаем как audio для конвертации в MP3
+				if parts[1] == "webm" && strings.Contains(strings.ToLower(line), "audio") {
+					parts[1] = "audio" // Принудительно меняем на audio для конвертации
+				}
+				
 				format := VideoFormat{
 					ID:         parts[0],
 					Extension:  parts[1],
@@ -188,8 +193,8 @@ func (us *UniversalService) filterTelegramCompatibleFormats(formats []VideoForma
 	var compatible []VideoFormat
 	
 	for _, format := range formats {
-		// Telegram поддерживает MP4, WEBM, MOV
-		if format.Extension == "mp4" || format.Extension == "webm" || format.Extension == "mov" || format.Extension == "audio" {
+		// Telegram поддерживает MP4, MOV, MP3, M4A, OGG (webm конвертируется в mp3)
+		if format.Extension == "mp4" || format.Extension == "mov" || format.Extension == "audio" {
 			// Проверяем размер файла (максимум 2GB для Telegram)
 			if !us.isFileTooLarge(format.FileSize, 2048) { // 2GB в MB
 				compatible = append(compatible, format)
