@@ -2401,6 +2401,20 @@ func main() {
 									fileExt := strings.ToLower(filepath.Ext(videoPath))
 									isAudio := fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".ogg"
 									
+									// Если файл в формате webm, конвертируем его в mp4
+									if fileExt == ".webm" {
+										log.Printf("🎬 Конвертирую WebM файл в MP4: %s", videoPath)
+										convertedPath, err := bot.convertWebmToMp4(videoPath)
+										if err != nil {
+											log.Printf("❌ Ошибка конвертации WebM: %v", err)
+											bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка конвертации видео файла")
+											return
+										}
+										videoPath = convertedPath
+										fileExt = ".mp4"
+										log.Printf("✅ WebM файл успешно конвертирован в MP4: %s", videoPath)
+									}
+									
 									// Получаем метаданные для красивого caption
 									var metadata *services.VideoMetadata
 									if platform == "youtube" || platform == "youtube_shorts" {
@@ -2600,6 +2614,39 @@ func extractVideoID(url string) string {
 }
 
 // fixUTF8Encoding исправляет UTF-8 кодировку строки
+// convertWebmToMp4 конвертирует WebM файл в MP4 используя ffmpeg
+func (b *LocalBot) convertWebmToMp4(webmPath string) (string, error) {
+	// Создаем путь для MP4 файла
+	mp4Path := strings.TrimSuffix(webmPath, ".webm") + ".mp4"
+	
+	// Команда ffmpeg для конвертации
+	cmd := exec.Command("ffmpeg", 
+		"-i", webmPath,
+		"-c:v", "libx264",
+		"-c:a", "aac",
+		"-preset", "fast",
+		"-crf", "23",
+		"-y", // Перезаписывать файл если существует
+		mp4Path)
+	
+	log.Printf("🎬 Выполняю конвертацию: %s", strings.Join(cmd.Args, " "))
+	
+	// Запускаем конвертацию
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("❌ Ошибка ffmpeg: %s", string(output))
+		return "", fmt.Errorf("ошибка конвертации WebM в MP4: %v", err)
+	}
+	
+	// Удаляем оригинальный WebM файл
+	if err := os.Remove(webmPath); err != nil {
+		log.Printf("⚠️ Не удалось удалить WebM файл %s: %v", webmPath, err)
+	}
+	
+	log.Printf("✅ Конвертация завершена: %s -> %s", webmPath, mp4Path)
+	return mp4Path, nil
+}
+
 func fixUTF8Encoding(s string) string {
 	// Проверяем, что строка валидна UTF-8
 	if utf8.ValidString(s) {
@@ -2684,7 +2731,7 @@ func (b *LocalBot) validateVideoFile(videoPath string) bool {
 	
 	// Проверяем расширение файла
 	ext := strings.ToLower(filepath.Ext(videoPath))
-	allowedExts := []string{".mp4", ".avi", ".mov", ".mkv", ".m4v", ".mp3", ".m4a", ".ogg"}
+	allowedExts := []string{".mp4", ".avi", ".mov", ".mkv", ".m4v", ".mp3", ".m4a", ".ogg", ".webm"}
 	isValidExt := false
 	for _, allowedExt := range allowedExts {
 		if ext == allowedExt {

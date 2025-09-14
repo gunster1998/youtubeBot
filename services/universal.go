@@ -99,6 +99,13 @@ func (us *UniversalService) DownloadVideoWithFormat(url, formatID string) (strin
 		log.Printf("🎵 Обнаружен аудиоформат %s, принудительно конвертирую в MP3", formatID)
 	}
 	
+	// Дополнительная проверка: если формат может дать webm файл, принудительно конвертируем в MP4
+	// Это нужно для случаев когда видео скачивается в webm формате
+	if strings.Contains(formatID, "webm") || strings.Contains(formatID, "251") || strings.Contains(formatID, "250") {
+		downloadArgs = append(downloadArgs, "--recode-video", "mp4")
+		log.Printf("🎬 Обнаружен WebM формат %s, принудительно конвертирую в MP4", formatID)
+	}
+	
 	// Добавляем аргументы прокси
 	proxyArgs := getProxyArgs()
 	
