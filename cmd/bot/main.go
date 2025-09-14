@@ -1215,8 +1215,8 @@ func (b *LocalBot) SendVideoFormatsOnly(chatID int64, text string, formats []ser
 			}
 			
 			// Проверяем, есть ли видео в кэше
-			if inCache, _, err := b.isVideoInCache(videoID, platform); err == nil && inCache {
-				log.Printf("⚡ Видео найдено в кэше, добавляю кнопку мгновенного скачивания")
+			if inCache, cachedFormats, err := b.isVideoInCache(videoID, platform); err == nil && inCache {
+				log.Printf("⚡ Видео найдено в кэше (%d форматов), добавляю кнопку мгновенного скачивания", len(cachedFormats))
 				
 				// Добавляем кнопку "Скачать мгновенно"
 				keyboard = append(keyboard, []map[string]interface{}{
@@ -1225,6 +1225,8 @@ func (b *LocalBot) SendVideoFormatsOnly(chatID int64, text string, formats []ser
 						"callback_data": "instant_cache",
 					},
 				})
+			} else {
+				log.Printf("🔍 Видео не найдено в кэше: videoID=%s, platform=%s, error=%v", videoID, platform, err)
 			}
 		}
 	}
@@ -1370,7 +1372,34 @@ func (b *LocalBot) SendAudioFormatsOnly(chatID int64, text string, formats []ser
 		})
 	}
 	
-	// НЕ добавляем кнопку "Мгновенно" - только аудио форматы
+	// Проверяем, есть ли видео в кэше для мгновенного скачивания
+	videoURL, exists := b.getVideoURLCache(chatID)
+	if exists && videoURL != "" {
+		// Извлекаем videoID из URL
+		videoID := extractVideoID(videoURL)
+		if videoID != "" {
+			// Получаем платформу из кэша
+			platform := b.platformCache[chatID]
+			if platform == "" {
+				platform = "youtube" // По умолчанию YouTube
+			}
+			
+			// Проверяем, есть ли видео в кэше
+			if inCache, cachedFormats, err := b.isVideoInCache(videoID, platform); err == nil && inCache {
+				log.Printf("⚡ Видео найдено в кэше (%d форматов), добавляю кнопку мгновенного скачивания", len(cachedFormats))
+				
+				// Добавляем кнопку "Скачать мгновенно"
+				keyboard = append(keyboard, []map[string]interface{}{
+					{
+						"text":          "⚡ Скачать мгновенно (из кэша)",
+						"callback_data": "instant_cache",
+					},
+				})
+			} else {
+				log.Printf("🔍 Видео не найдено в кэше: videoID=%s, platform=%s, error=%v", videoID, platform, err)
+			}
+		}
+	}
 	
 	// Создаем сообщение с keyboard
 	message := map[string]interface{}{
