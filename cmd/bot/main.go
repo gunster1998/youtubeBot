@@ -1305,6 +1305,35 @@ func (b *LocalBot) SendAllFormats(chatID int64, text string, formats []services.
 		})
 	}
 	
+	// Проверяем, есть ли видео в кэше для мгновенного скачивания
+	videoURL, exists := b.getVideoURLCache(chatID)
+	if exists && videoURL != "" {
+		// Извлекаем videoID из URL
+		videoID := extractVideoID(videoURL)
+		if videoID != "" {
+			// Получаем платформу из кэша
+			platform := b.platformCache[chatID]
+			if platform == "" {
+				platform = "youtube" // По умолчанию YouTube
+			}
+			
+			// Проверяем, есть ли видео в кэше
+			if inCache, cachedFormats, err := b.isVideoInCache(videoID, platform); err == nil && inCache {
+				log.Printf("⚡ Видео найдено в кэше (%d форматов), добавляю кнопку мгновенного скачивания", len(cachedFormats))
+				
+				// Добавляем кнопку "Скачать мгновенно"
+				keyboard = append(keyboard, []map[string]interface{}{
+					{
+						"text":          "⚡ Скачать мгновенно (из кэша)",
+						"callback_data": "instant_cache",
+					},
+				})
+			} else {
+				log.Printf("🔍 Видео не найдено в кэше: videoID=%s, platform=%s, error=%v", videoID, platform, err)
+			}
+		}
+	}
+	
 	// Создаем сообщение с keyboard
 	message := map[string]interface{}{
 		"chat_id":      chatID,
