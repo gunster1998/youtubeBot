@@ -20,8 +20,10 @@ import (
 	"sync"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"youtubeBot/config"
+	"youtubeBot/internal/netx"
 	"youtubeBot/services"
 )
 
@@ -30,6 +32,7 @@ type LocalBot struct {
 	Token    string
 	APIURL   string
 	Client   *http.Client
+	LocalClient *http.Client // Прямой клиент для локального API
 	Username string
 	FirstName string
 	
@@ -82,7 +85,7 @@ type BotMetrics struct {
 }
 
 // NewLocalBot создает новый экземпляр LocalBot
-func NewLocalBot(token, apiURL string, timeout time.Duration, youtubeService *services.YouTubeService, universalService *services.UniversalService, cacheService *services.CacheService) *LocalBot {
+func NewLocalBot(token, apiURL string, timeout time.Duration, youtubeService *services.YouTubeService, universalService *services.UniversalService, cacheService *services.CacheService, proxyConfig *config.ProxyConfig) *LocalBot {
 	// Создаем контекст для graceful shutdown
 	ctx, cancel := context.WithCancel(context.Background())
 	
@@ -91,12 +94,19 @@ func NewLocalBot(token, apiURL string, timeout time.Duration, youtubeService *se
 	adminIDs[6717533619] = true  // Первый администратор
 	adminIDs[234549643] = true   // Второй администратор
 	
+	// Создаем HTTP клиент с настройками прокси для внешних запросов
+	httpClient := netx.NewHTTPClient()
+	log.Printf("🌐 HTTP клиент настроен с SOCKS5 прокси")
+	
+	// Создаем прямой клиент для локального Telegram API
+	localClient := netx.NewDirectHTTPClient()
+	log.Printf("🌐 Прямой HTTP клиент для локального API")
+	
 	bot := &LocalBot{
 		Token:  token,
 		APIURL: apiURL,
-		Client: &http.Client{
-			Timeout: timeout,
-		},
+		Client: httpClient,
+		LocalClient: localClient,
 		// Thread-safe кэши
 		formatCache:    make(map[int64][]services.VideoFormat),
 		videoURLCache:  make(map[int64]string),
@@ -134,7 +144,7 @@ func NewLocalBot(token, apiURL string, timeout time.Duration, youtubeService *se
 
 // GetMe получает информацию о боте
 func (b *LocalBot) GetMe() error {
-	resp, err := b.Client.Get(fmt.Sprintf("%s/bot%s/getMe", b.APIURL, b.Token))
+	resp, err := b.LocalClient.Get(fmt.Sprintf("%s/bot%s/getMe", b.APIURL, b.Token))
 	if err != nil {
 		return fmt.Errorf("ошибка запроса getMe: %v", err)
 	}
@@ -443,7 +453,7 @@ func (b *LocalBot) SendMessage(chatID int64, text string) error {
 		return fmt.Errorf("ошибка маршалинга сообщения: %v", err)
 	}
 
-	resp, err := b.Client.Post(
+	resp, err := b.LocalClient.Post(
 		fmt.Sprintf("%s/bot%s/sendMessage", b.APIURL, b.Token),
 		"application/json",
 		bytes.NewBuffer(jsonData),
@@ -482,7 +492,7 @@ func (b *LocalBot) ClearChatHistory(chatID int64) error {
 				continue
 			}
 
-			resp, err := b.Client.Post(
+			resp, err := b.LocalClient.Post(
 				fmt.Sprintf("%s/bot%s/deleteMessage", b.APIURL, b.Token),
 				"application/json",
 				bytes.NewBuffer(jsonData),
@@ -626,7 +636,7 @@ func (b *LocalBot) SendVideo(chatID int64, videoPath, caption string) error {
 	writer.Close()
 
 	// Отправляем запрос
-	resp, err := b.Client.Post(
+	resp, err := b.LocalClient.Post(
 		fmt.Sprintf("%s/bot%s/sendVideo", b.APIURL, b.Token),
 		writer.FormDataContentType(),
 		&buf,
@@ -696,7 +706,7 @@ func (b *LocalBot) SendAudio(chatID int64, audioPath, caption string) error {
 	writer.Close()
 
 	// Отправляем запрос
-	resp, err := b.Client.Post(
+	resp, err := b.LocalClient.Post(
 		fmt.Sprintf("%s/bot%s/sendAudio", b.APIURL, b.Token),
 		writer.FormDataContentType(),
 		&buf,
@@ -772,7 +782,7 @@ func (b *LocalBot) getVideoThumbnail(videoPath string) string {
 
 // GetUpdates получает обновления от Telegram
 func (b *LocalBot) GetUpdates(offset, limit, timeout int) ([]Update, error) {
-	resp, err := b.Client.Get(fmt.Sprintf("%s/bot%s/getUpdates?offset=%d&limit=%d&timeout=%d", 
+	resp, err := b.LocalClient.Get(fmt.Sprintf("%s/bot%s/getUpdates?offset=%d&limit=%d&timeout=%d", 
 		b.APIURL, b.Token, offset, limit, timeout))
 	if err != nil {
 		return nil, fmt.Errorf("ошибка запроса getUpdates: %v", err)
@@ -861,7 +871,7 @@ func (b *LocalBot) SendFormatTypeMenu(chatID int64, audioCount, videoCount int) 
 	}
 	
 	// Отправляем запрос
-	resp, err := b.Client.Post(
+	resp, err := b.LocalClient.Post(
 		fmt.Sprintf("%s/bot%s/sendMessage", b.APIURL, b.Token),
 		"application/json",
 		bytes.NewBuffer(jsonData),
@@ -900,7 +910,7 @@ func (b *LocalBot) SendPhoto(chatID int64, photoURL, caption string) error {
 	
 	log.Printf("📸 JSON данные: %s", string(jsonData))
 
-	resp, err := b.Client.Post(
+	resp, err := b.LocalClient.Post(
 		fmt.Sprintf("%s/bot%s/sendPhoto", b.APIURL, b.Token),
 		"application/json",
 		bytes.NewBuffer(jsonData),
@@ -978,7 +988,7 @@ func (b *LocalBot) SendPhotoFromFile(chatID int64, filePath, caption string) err
 	
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	
-	resp, err := b.Client.Do(req)
+	resp, err := b.LocalClient.Do(req)
 	if err != nil {
 		log.Printf("❌ Ошибка HTTP запроса: %v", err)
 		return fmt.Errorf("ошибка отправки фото: %v", err)
@@ -1078,7 +1088,7 @@ func (b *LocalBot) SendMediaGroup(chatID int64, mediaFiles []string) error {
 	
 	req.Header.Set("Content-Type", writer.FormDataContentType())
 	
-	resp, err := b.Client.Do(req)
+	resp, err := b.LocalClient.Do(req)
 	if err != nil {
 		log.Printf("❌ Ошибка HTTP запроса: %v", err)
 		return fmt.Errorf("ошибка отправки медиагруппы: %v", err)
@@ -1207,7 +1217,7 @@ func (b *LocalBot) SendVideoFormatsOnly(chatID int64, text string, formats []ser
 	}
 	
 	// Отправляем запрос
-	resp, err := b.Client.Post(
+	resp, err := b.LocalClient.Post(
 		fmt.Sprintf("%s/bot%s/sendMessage", b.APIURL, b.Token),
 		"application/json",
 		bytes.NewBuffer(jsonData),
@@ -1281,7 +1291,7 @@ func (b *LocalBot) SendAllFormats(chatID int64, text string, formats []services.
 	}
 	
 	// Отправляем запрос
-	resp, err := b.Client.Post(
+	resp, err := b.LocalClient.Post(
 		fmt.Sprintf("%s/bot%s/sendMessage", b.APIURL, b.Token),
 		"application/json",
 		bytes.NewBuffer(jsonData),
@@ -1350,7 +1360,7 @@ func (b *LocalBot) SendAudioFormatsOnly(chatID int64, text string, formats []ser
 	}
 	
 	// Отправляем запрос
-	resp, err := b.Client.Post(
+	resp, err := b.LocalClient.Post(
 		fmt.Sprintf("%s/bot%s/sendMessage", b.APIURL, b.Token),
 		"application/json",
 		bytes.NewBuffer(jsonData),
@@ -1411,7 +1421,7 @@ func (b *LocalBot) SendInlineKeyboard(chatID int64, text string, formats []servi
 	}
 	
 	// Отправляем запрос
-	resp, err := b.Client.Post(
+	resp, err := b.LocalClient.Post(
 		fmt.Sprintf("%s/bot%s/sendMessage", b.APIURL, b.Token),
 		"application/json",
 		bytes.NewBuffer(jsonData),
@@ -1441,7 +1451,7 @@ func (b *LocalBot) AnswerCallbackQuery(callbackID string) error {
 	}
 	
 	// Отправляем запрос
-	resp, err := b.Client.Post(
+	resp, err := b.LocalClient.Post(
 		fmt.Sprintf("%s/bot%s/answerCallbackQuery", b.APIURL, b.Token),
 		"application/json",
 		bytes.NewBuffer(jsonData),
@@ -1530,7 +1540,7 @@ func main() {
 	defer cacheService.Close()
 	
 	// Создаем локального бота
-	bot := NewLocalBot(cfg.TelegramToken, cfg.TelegramAPI, time.Duration(cfg.HTTPTimeout)*time.Second, youtubeService, universalService, cacheService)
+	bot := NewLocalBot(cfg.TelegramToken, cfg.TelegramAPI, time.Duration(cfg.HTTPTimeout)*time.Second, youtubeService, universalService, cacheService, cfg.Proxy)
 
 	// Проверяем подключение к локальному серверу Telegram API
 	if err := bot.GetMe(); err != nil {
@@ -1582,7 +1592,8 @@ func main() {
 	// Основной цикл получения обновлений через getUpdates
 	log.Printf("🔄 Запуск цикла getUpdates...")
 	
-	offset := int64(0)
+	// Загружаем последний offset из файла
+	offset := loadLastOffset()
 	lastCleanup := time.Now()
 	for {
 		select {
@@ -1598,9 +1609,19 @@ func main() {
 			}
 			
 			// Получаем обновления
-			updates, err := bot.GetUpdates(int(offset), 100, 30)
+			updates, err := bot.GetUpdates(int(offset), 100, 0)
 			if err != nil {
 				log.Printf("⚠️ Ошибка получения обновлений: %v", err)
+				
+				// Обработка ошибки 409 Conflict
+				if strings.Contains(err.Error(), "409") {
+					log.Printf("🔄 Ошибка 409 (Conflict) - сбрасываю offset")
+					offset = 0
+					saveLastOffset(offset)
+					time.Sleep(5 * time.Second)
+					continue
+				}
+				
 				time.Sleep(5 * time.Second)
 				continue
 			}
@@ -1609,6 +1630,8 @@ func main() {
 			for _, update := range updates {
 				if update.UpdateID >= offset {
 					offset = update.UpdateID + 1
+					// Сохраняем offset после каждого обновления
+					saveLastOffset(offset)
 				}
 
 				if update.Message != nil {
@@ -2576,6 +2599,25 @@ func extractVideoID(url string) string {
 	return ""
 }
 
+// fixUTF8Encoding исправляет UTF-8 кодировку строки
+func fixUTF8Encoding(s string) string {
+	// Проверяем, что строка валидна UTF-8
+	if utf8.ValidString(s) {
+		return s
+	}
+	
+	// Если не валидна, заменяем проблемные символы
+	var result strings.Builder
+	for _, r := range s {
+		if utf8.ValidRune(r) {
+			result.WriteRune(r)
+		} else {
+			result.WriteRune('?')
+		}
+	}
+	return result.String()
+}
+
 // createVideoCaption создает красивый caption для скачанного видео
 func (b *LocalBot) createVideoCaption(metadata *services.VideoMetadata, formatID, resolution string) string {
 	// Обрезаем описание если оно слишком длинное
@@ -2600,13 +2642,13 @@ func (b *LocalBot) createVideoCaption(metadata *services.VideoMetadata, formatID
 🔗 Оригинал: %s
 
 🤖 Скачано через @TubeSaverRuBot`, 
-		metadata.Title,
-		metadata.Author,
-		metadata.Duration,
-		metadata.Views,
-		metadata.UploadDate,
-		description,
-		resolution,
+		fixUTF8Encoding(metadata.Title),
+		fixUTF8Encoding(metadata.Author),
+		fixUTF8Encoding(metadata.Duration),
+		fixUTF8Encoding(metadata.Views),
+		fixUTF8Encoding(metadata.UploadDate),
+		fixUTF8Encoding(description),
+		fixUTF8Encoding(resolution),
 		metadata.OriginalURL)
 	
 	return caption
@@ -2887,5 +2929,39 @@ func formatTime(t time.Time) string {
 		return fmt.Sprintf("%.0f ч назад", diff.Hours())
 	} else {
 		return t.Format("02.01.2006 15:04")
+	}
+}
+
+// loadLastOffset загружает последний offset из файла
+func loadLastOffset() int64 {
+	offsetFile := "last_offset.txt"
+	if _, err := os.Stat(offsetFile); os.IsNotExist(err) {
+		log.Printf("📂 Файл offset не найден, начинаю с 0")
+		return 0
+	}
+	
+	data, err := os.ReadFile(offsetFile)
+	if err != nil {
+		log.Printf("⚠️ Ошибка чтения offset: %v", err)
+		return 0
+	}
+	
+	offsetStr := strings.TrimSpace(string(data))
+	offset, err := strconv.ParseInt(offsetStr, 10, 64)
+	if err != nil {
+		log.Printf("⚠️ Ошибка парсинга offset: %v", err)
+		return 0
+	}
+	
+	log.Printf("📂 Загружен последний offset: %d", offset)
+	return offset
+}
+
+// saveLastOffset сохраняет offset в файл
+func saveLastOffset(offset int64) {
+	offsetFile := "last_offset.txt"
+	err := os.WriteFile(offsetFile, []byte(fmt.Sprintf("%d", offset)), 0644)
+	if err != nil {
+		log.Printf("⚠️ Ошибка сохранения offset: %v", err)
 	}
 }

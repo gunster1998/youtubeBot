@@ -12,6 +12,7 @@ type Config struct {
 	HTTPTimeout   int
 	DownloadDir   string
 	MaxFileSize   int64 // Максимальный размер файла в байтах (0 = без ограничений)
+	Proxy         *ProxyConfig // Настройки прокси
 }
 
 // Load загружает конфигурацию из файла и переменных окружения
@@ -27,6 +28,7 @@ func Load(filename string) (*Config, error) {
 		HTTPTimeout:   60, // увеличиваем таймаут для больших файлов
 		DownloadDir:   "./downloads",
 		MaxFileSize:   0, // 0 = без ограничений
+		Proxy:         LoadProxyConfig(), // Загружаем настройки прокси
 	}
 
 	return config, nil

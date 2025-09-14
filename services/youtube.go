@@ -62,30 +62,35 @@ func getYtDlpPath() string {
 func getProxyArgs() []string {
 	var args []string
 	
-	// Проверяем ALL_PROXY (приоритетный)
-	if allProxy := os.Getenv("ALL_PROXY"); allProxy != "" {
+	// Проверяем USE_PROXY флаг
+	useProxy := strings.ToLower(os.Getenv("USE_PROXY")) == "true"
+	if !useProxy {
+		log.Printf("🌐 Прокси отключен (USE_PROXY=false)")
+		return args
+	}
+	
+	// Проверяем PROXY_URL (новый приоритетный способ)
+	if proxyURL := os.Getenv("PROXY_URL"); proxyURL != "" {
+		args = append(args, "--proxy", proxyURL)
+		log.Printf("🌐 Используется PROXY_URL: %s", proxyURL)
+	} else if allProxy := os.Getenv("ALL_PROXY"); allProxy != "" {
 		args = append(args, "--proxy", allProxy)
 		log.Printf("🌐 Используется ALL_PROXY: %s", allProxy)
-		return args // ALL_PROXY имеет приоритет над остальными
-	}
-	
-	// Проверяем HTTP прокси
-	if httpProxy := os.Getenv("HTTP_PROXY"); httpProxy != "" {
+	} else if httpProxy := os.Getenv("HTTP_PROXY"); httpProxy != "" {
 		args = append(args, "--proxy", httpProxy)
 		log.Printf("🌐 Используется HTTP_PROXY: %s", httpProxy)
-	}
-	
-	// Проверяем HTTPS прокси
-	if httpsProxy := os.Getenv("HTTPS_PROXY"); httpsProxy != "" {
+	} else if httpsProxy := os.Getenv("HTTPS_PROXY"); httpsProxy != "" {
 		args = append(args, "--proxy", httpsProxy)
 		log.Printf("🌐 Используется HTTPS_PROXY: %s", httpsProxy)
-	}
-	
-	// Проверяем SOCKS прокси (для обратной совместимости)
-	if socksProxy := os.Getenv("SOCKS_PROXY"); socksProxy != "" {
+	} else if socksProxy := os.Getenv("SOCKS_PROXY"); socksProxy != "" {
 		args = append(args, "--proxy", socksProxy)
 		log.Printf("🌐 Используется SOCKS_PROXY: %s", socksProxy)
 	}
+	
+	// Добавляем анти-429 задержки для стабильности
+	args = append(args, "--sleep-requests", "1")
+	args = append(args, "--sleep-interval", "1")
+	args = append(args, "--max-sleep-interval", "3")
 	
 	return args
 }
@@ -908,15 +913,16 @@ func (s *YouTubeService) CheckNetwork() error {
 	args := []string{"-s", "--connect-timeout", "10", "--max-time", "30"}
 	
 	// Добавляем прокси если доступен
-	if allProxy := os.Getenv("ALL_PROXY"); allProxy != "" {
-		args = append(args, "--proxy", allProxy)
-		log.Printf("🌐 Проверка сети через ALL_PROXY: %s", allProxy)
-	} else if httpProxy := os.Getenv("HTTP_PROXY"); httpProxy != "" {
-		args = append(args, "--proxy", httpProxy)
-		log.Printf("🌐 Проверка сети через HTTP_PROXY: %s", httpProxy)
-	} else if httpsProxy := os.Getenv("HTTPS_PROXY"); httpsProxy != "" {
-		args = append(args, "--proxy", httpsProxy)
-		log.Printf("🌐 Проверка сети через HTTPS_PROXY: %s", httpsProxy)
+	proxyArgs := getProxyArgs()
+	if len(proxyArgs) > 0 {
+		// Извлекаем только --proxy аргумент из getProxyArgs
+		for i, arg := range proxyArgs {
+			if arg == "--proxy" && i+1 < len(proxyArgs) {
+				args = append(args, "--proxy", proxyArgs[i+1])
+				log.Printf("🌐 Проверка сети через прокси: %s", proxyArgs[i+1])
+				break
+			}
+		}
 	}
 	
 	args = append(args, "https://www.youtube.com")

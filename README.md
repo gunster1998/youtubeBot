@@ -47,52 +47,51 @@ brew install yt-dlp
 git clone https://github.com/yourusername/youtubeBot.git
 cd youtubeBot
 
-### 2. Настройка VPN/Прокси (для России и других стран с блокировкой YouTube)
+### 2. Настройка прокси (для России и других стран с блокировкой YouTube)
 
-**⚠️ Обязательно для России!** YouTube заблокирован, нужен VPN или прокси.
+**⚠️ Обязательно для России!** YouTube заблокирован, нужен SOCKS5 прокси.
 
-#### Вариант A: VLESS-Reality прокси (рекомендуется)
+#### Настройка через .env
+
 ```bash
-# Настроить VLESS-Reality прокси на портах:
-# SOCKS5: 127.0.0.1:10808
-# HTTP: 127.0.0.1:10809
+# Скопируйте конфигурацию
+cp env.example .env
 
-# Добавить в config.env:
-ALL_PROXY=socks5h://127.0.0.1:10808
-HTTP_PROXY=http://127.0.0.1:10809
-HTTPS_PROXY=http://127.0.0.1:10809
-NO_PROXY=localhost,127.0.0.1,::1,unix
+# Отредактируйте настройки
+nano .env
 ```
 
-#### Вариант B: SOCKS прокси
+**Настройки прокси в .env:**
+
+```env
+# Включить прокси
+USE_PROXY=true
+
+# URL прокси (sing-box на сервере)
+PROXY_URL=socks5h://127.0.0.1:1080
+
+# Исключения для прокси
+NO_PROXY=localhost,127.0.0.1,172.16.0.0/12,192.168.0.0/16
+```
+
+#### Поддерживаемые прокси
+
+- **SOCKS5** (рекомендуется): `socks5h://127.0.0.1:1080`
+- **HTTP**: `http://127.0.0.1:8080`
+- **HTTPS**: `https://127.0.0.1:8080`
+
+#### Тестирование прокси
+
 ```bash
-# Установить SOCKS прокси (например, через SSH туннель)
-ssh -D 1080 user@remote-server.com
+# Самопроверка
+./scripts/run_selftest.sh
 
-# Или использовать готовые SOCKS прокси сервисы
-# Настроить в config.env:
-SOCKS_PROXY=socks5://127.0.0.1:1080
+# Ручная проверка
+yt-dlp --proxy socks5h://127.0.0.1:1080 -s "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
 ```
 
-#### Вариант C: HTTP прокси
-```bash
-# Установить HTTP прокси
-sudo apt install squid
+**Подробная документация:** [README_PROXY.md](README_PROXY.md)
 
-# Настроить в config.env:
-HTTP_PROXY=http://127.0.0.1:8080
-HTTPS_PROXY=http://127.0.0.1:8080
-```
-
-#### Вариант D: Системный VPN
-```bash
-# Установить OpenVPN
-sudo apt install openvpn
-
-# Или использовать готовые VPN сервисы
-# Бот автоматически будет использовать системный VPN
-```
-```
 
 ### 3. Настройка локального сервера Telegram API
 
