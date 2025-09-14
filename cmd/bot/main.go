@@ -2420,6 +2420,18 @@ func main() {
 									// Определяем финальный тип файла
 									isAudio := isAudioFormat || fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".ogg"
 									
+									// Если это аудио и файл имеет двойное расширение (.mp4.mp3), исправляем это
+									if isAudio && strings.Contains(videoPath, ".mp4.mp3") {
+										correctPath := strings.Replace(videoPath, ".mp4.mp3", ".mp3", 1)
+										if err := os.Rename(videoPath, correctPath); err != nil {
+											log.Printf("⚠️ Не удалось переименовать файл: %v", err)
+										} else {
+											videoPath = correctPath
+											fileExt = ".mp3"
+											log.Printf("✅ Файл переименован: %s -> %s", videoPath, correctPath)
+										}
+									}
+									
 									// Если файл в формате webm, конвертируем его
 									if fileExt == ".webm" {
 										if isAudio {
@@ -2650,8 +2662,10 @@ func extractVideoID(url string) string {
 // fixUTF8Encoding исправляет UTF-8 кодировку строки
 // convertWebmToMp3 конвертирует WebM аудио файл в MP3 используя ffmpeg
 func (b *LocalBot) convertWebmToMp3(webmPath string) (string, error) {
-	// Создаем путь для MP3 файла
-	mp3Path := strings.TrimSuffix(webmPath, ".webm") + ".mp3"
+	// Создаем путь для MP3 файла, убирая все расширения и добавляя .mp3
+	basePath := strings.TrimSuffix(webmPath, ".webm")
+	basePath = strings.TrimSuffix(basePath, ".mp4") // Убираем .mp4 если есть
+	mp3Path := basePath + ".mp3"
 	
 	// Команда ffmpeg для конвертации аудио
 	cmd := exec.Command("ffmpeg", 

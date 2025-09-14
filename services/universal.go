@@ -96,7 +96,11 @@ func (us *UniversalService) DownloadVideoWithFormat(url, formatID string) (strin
 	// Проверяем по ID формата - если содержит "drc", "audio", "webm" или другие аудио ID, это аудио
 	if strings.Contains(formatID, "drc") || strings.Contains(formatID, "audio") || strings.Contains(formatID, "bestaudio") || strings.Contains(formatID, "webm") {
 		downloadArgs = append(downloadArgs, "--extract-audio", "--audio-format", "mp3", "--audio-quality", "0")
+		// Для аудио не используем merge-output-format, чтобы получить правильное расширение
 		log.Printf("🎵 Обнаружен аудиоформат %s, принудительно конвертирую в MP3", formatID)
+	} else {
+		// Только для видео используем merge-output-format
+		downloadArgs = append(downloadArgs, "--merge-output-format", "mp4")
 	}
 	
 	// Дополнительная проверка: если формат может дать webm файл, принудительно конвертируем в MP4
