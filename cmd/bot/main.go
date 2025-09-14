@@ -2639,12 +2639,8 @@ func main() {
 										}
 										
 										log.Printf("✅ Аудио успешно отправлено: %s", formatID)
-										// Удаляем файл после успешной отправки
-										if err := os.Remove(videoPath); err != nil {
-											log.Printf("⚠️ Не удалось удалить аудио файл: %v", err)
-										} else {
-											log.Printf("🗑️ Аудио файл удален: %s", videoPath)
-										}
+										// НЕ удаляем файл - он в кэше для мгновенного скачивания
+										log.Printf("💾 Аудио файл сохранен в кэше: %s", videoPath)
 									} else {
 										// Для видео файлов
 										if err := bot.SendVideo(callback.Message.Chat.ID, videoPath, caption); err != nil {
@@ -2656,12 +2652,8 @@ func main() {
 										}
 										
 										log.Printf("✅ Видео успешно отправлено: %s", formatID)
-										// Удаляем файл после успешной отправки
-										if err := os.Remove(videoPath); err != nil {
-											log.Printf("⚠️ Не удалось удалить видео файл: %v", err)
-										} else {
-											log.Printf("🗑️ Видео файл удален: %s", videoPath)
-										}
+										// НЕ удаляем файл - он в кэше для мгновенного скачивания
+										log.Printf("💾 Видео файл сохранен в кэше: %s", videoPath)
 									}
 								} else {
 									log.Printf("❌ Не найден URL для формата %s", formatID)
@@ -2843,7 +2835,24 @@ func (b *LocalBot) getPopularCachedVideos(limit int) ([]services.VideoCache, err
 // isVideoInCache проверяет, есть ли видео в кэше
 func (b *LocalBot) isVideoInCache(videoID, platform string) (bool, []services.VideoCache, error) {
 	// Получаем все форматы для этого видео из кэша
-	return b.cacheService.GetVideoFormats(videoID, platform)
+	inCache, cachedFormats, err := b.cacheService.GetVideoFormats(videoID, platform)
+	if err != nil || !inCache {
+		return false, nil, err
+	}
+	
+	// Проверяем, какие файлы действительно существуют
+	var existingFormats []services.VideoCache
+	for _, format := range cachedFormats {
+		if _, err := os.Stat(format.FilePath); err == nil {
+			log.Printf("✅ Файл существует в кэше: %s", format.FilePath)
+			existingFormats = append(existingFormats, format)
+		} else {
+			log.Printf("⚠️ Файл в кэше но не существует: %s", format.FilePath)
+		}
+	}
+	
+	// Возвращаем true только если есть хотя бы один существующий файл
+	return len(existingFormats) > 0, existingFormats, nil
 }
 
 // convertWebmToMp3 конвертирует WebM аудио файл в MP3 используя ffmpeg
