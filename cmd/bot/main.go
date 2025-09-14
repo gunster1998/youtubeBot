@@ -1167,7 +1167,7 @@ func (b *LocalBot) SendWelcomeMessageWithImages(chatID int64) error {
 	return nil
 }
 
-// SendVideoFormatsOnly отправляет только видео форматы без кнопки "Мгновенно"
+// SendVideoFormatsOnly отправляет только видео форматы с кнопкой "Скачать мгновенно" если есть в кэше
 func (b *LocalBot) SendVideoFormatsOnly(chatID int64, text string, formats []services.VideoFormat) error {
 	log.Printf("🎥 Отправляю только видео форматы (%d штук)", len(formats))
 	
@@ -1202,7 +1202,32 @@ func (b *LocalBot) SendVideoFormatsOnly(chatID int64, text string, formats []ser
 		})
 	}
 	
-	// НЕ добавляем кнопку "Мгновенно" - только видео форматы
+	// Проверяем, есть ли видео в кэше для мгновенного скачивания
+	videoURL, exists := b.getVideoURLCache(chatID)
+	if exists && videoURL != "" {
+		// Извлекаем videoID из URL
+		videoID := extractVideoID(videoURL)
+		if videoID != "" {
+			// Получаем платформу из кэша
+			platform := b.platformCache[chatID]
+			if platform == "" {
+				platform = "youtube" // По умолчанию YouTube
+			}
+			
+			// Проверяем, есть ли видео в кэше
+			if inCache, _, err := b.isVideoInCache(videoID, platform); err == nil && inCache {
+				log.Printf("⚡ Видео найдено в кэше, добавляю кнопку мгновенного скачивания")
+				
+				// Добавляем кнопку "Скачать мгновенно"
+				keyboard = append(keyboard, []map[string]interface{}{
+					{
+						"text":          "⚡ Скачать мгновенно (из кэша)",
+						"callback_data": "instant_cache",
+					},
+				})
+			}
+		}
+	}
 	
 	// Создаем сообщение с keyboard
 	message := map[string]interface{}{
@@ -2343,22 +2368,37 @@ func main() {
 									if isCached, cachedVideo, err := bot.cacheService.IsVideoCached(videoID, platform, formatID); err != nil {
 										log.Printf("⚠️ Ошибка проверки кэша: %v", err)
 									} else if isCached {
-										// Видео в кэше - отправляем мгновенно
-										log.Printf("⚡ Видео найдено в кэше: %s (формат: %s)", videoID, formatID)
-										bot.SendMessage(callback.Message.Chat.ID, "⚡ Отправляю видео из кэша...")
+										// Файл в кэше - отправляем мгновенно
+										log.Printf("⚡ Файл найден в кэше: %s (формат: %s)", videoID, formatID)
 										
-										// Отправляем файл из кэша
-										if err := bot.SendVideo(callback.Message.Chat.ID, cachedVideo.FilePath, fmt.Sprintf("Видео в формате %s (из кэша)", formatID)); err != nil {
-											log.Printf("❌ Ошибка отправки из кэша: %v", err)
-											bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка отправки из кэша")
-											return
+										// Определяем тип файла по расширению
+										fileExt := strings.ToLower(filepath.Ext(cachedVideo.FilePath))
+										isAudio := fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".ogg"
+										
+										if isAudio {
+											bot.SendMessage(callback.Message.Chat.ID, "⚡ Отправляю аудио из кэша...")
+											// Отправляем аудио из кэша
+											if err := bot.SendAudio(callback.Message.Chat.ID, cachedVideo.FilePath, fmt.Sprintf("Аудио в формате %s (из кэша)", formatID)); err != nil {
+												log.Printf("❌ Ошибка отправки аудио из кэша: %v", err)
+												bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка отправки аудио из кэша")
+												return
+											}
+											log.Printf("✅ Аудио отправлено из кэша: %s", formatID)
+										} else {
+											bot.SendMessage(callback.Message.Chat.ID, "⚡ Отправляю видео из кэша...")
+											// Отправляем видео из кэша
+											if err := bot.SendVideo(callback.Message.Chat.ID, cachedVideo.FilePath, fmt.Sprintf("Видео в формате %s (из кэша)", formatID)); err != nil {
+												log.Printf("❌ Ошибка отправки видео из кэша: %v", err)
+												bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка отправки видео из кэша")
+												return
+											}
+											log.Printf("✅ Видео отправлено из кэша: %s", formatID)
 										}
 										
 										// Увеличиваем счетчик скачиваний
 										bot.cacheService.IncrementDownloadCount(videoID, string(platformInfo.Type), formatID)
 										
-										log.Printf("✅ Видео отправлено из кэша: %s", formatID)
-										bot.SendMessage(callback.Message.Chat.ID, "✅ Видео отправлено из кэша!")
+										bot.SendMessage(callback.Message.Chat.ID, "✅ Файл отправлен из кэша!")
 										return
 									}
 									
@@ -2531,32 +2571,38 @@ func main() {
 										}
 									}
 									
-									// Сохраняем видео в кэш (только для видео, не для аудио)
-									if !isAudio {
-										// Получаем информацию о файле
-										fileInfo, err := os.Stat(videoPath)
-										if err != nil {
-											log.Printf("⚠️ Не удалось получить информацию о файле: %v", err)
-										} else {
-											// Находим формат для получения разрешения
-											formats, exists := bot.getFormatCache(callback.Message.Chat.ID)
-											var resolution string
-											if exists {
-												for _, f := range formats {
-													if f.ID == formatID {
-														resolution = f.Resolution
-														break
-													}
+									// Сохраняем файл в кэш (и видео, и аудио)
+									// Получаем информацию о файле
+									fileInfo, err := os.Stat(videoPath)
+									if err != nil {
+										log.Printf("⚠️ Не удалось получить информацию о файле: %v", err)
+									} else {
+										// Находим формат для получения разрешения
+										formats, exists := bot.getFormatCache(callback.Message.Chat.ID)
+										var resolution string
+										if exists {
+											for _, f := range formats {
+												if f.ID == formatID {
+													resolution = f.Resolution
+													break
 												}
 											}
-											
-											// Добавляем в кэш
-											title := bot.universalService.GetPlatformInfo(videoURL).DisplayName + " Video"
-											if err := bot.cacheService.AddToCache(videoID, platform, videoURL, title, formatID, resolution, videoPath, fileInfo.Size()); err != nil {
-												log.Printf("⚠️ Не удалось добавить в кэш: %v", err)
-											} else {
-												log.Printf("💾 Видео добавлено в кэш: %s (%s)", videoID, formatID)
-											}
+										}
+										
+										// Определяем тип контента для заголовка
+										var contentType string
+										if isAudio {
+											contentType = "Audio"
+										} else {
+											contentType = "Video"
+										}
+										
+										// Добавляем в кэш
+										title := bot.universalService.GetPlatformInfo(videoURL).DisplayName + " " + contentType
+										if err := bot.cacheService.AddToCache(videoID, platform, videoURL, title, formatID, resolution, videoPath, fileInfo.Size()); err != nil {
+											log.Printf("⚠️ Не удалось добавить в кэш: %v", err)
+										} else {
+											log.Printf("💾 %s добавлено в кэш: %s (%s)", contentType, videoID, formatID)
 										}
 									}
 								} else {
@@ -2569,6 +2615,77 @@ func main() {
 								bot.UpdateMetrics("download", true, duration)
 							}()
 						}
+					} else if callback.Data == "instant_cache" {
+						// Пользователь выбрал мгновенное скачивание из кэша
+						log.Printf("⚡ Пользователь выбрал мгновенное скачивание из кэша")
+						bot.AnswerCallbackQuery(callback.ID)
+						
+						// Получаем URL видео из кэша
+						videoURL, exists := bot.getVideoURLCache(callback.Message.Chat.ID)
+						if !exists || videoURL == "" {
+							log.Printf("❌ URL видео не найден в кэше для чата %d", callback.Message.Chat.ID)
+							bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка: URL видео не найден. Отправьте ссылку заново.")
+							return
+						}
+						
+						// Извлекаем videoID из URL
+						videoID := extractVideoID(videoURL)
+						if videoID == "" {
+							log.Printf("❌ Не удалось извлечь videoID из URL: %s", videoURL)
+							bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка: не удалось извлечь ID видео.")
+							return
+						}
+						
+						// Получаем платформу из кэша
+						platform := bot.platformCache[callback.Message.Chat.ID]
+						if platform == "" {
+							platform = "youtube" // По умолчанию YouTube
+						}
+						
+						// Получаем все форматы из кэша
+						inCache, cachedFormats, err := bot.isVideoInCache(videoID, platform)
+						if err != nil {
+							log.Printf("❌ Ошибка проверки кэша: %v", err)
+							bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка проверки кэша.")
+							return
+						}
+						
+						if !inCache || len(cachedFormats) == 0 {
+							log.Printf("❌ Видео не найдено в кэше: %s", videoID)
+							bot.SendMessage(callback.Message.Chat.ID, "❌ Видео не найдено в кэше. Попробуйте скачать заново.")
+							return
+						}
+						
+						// Отправляем все доступные форматы из кэша
+						bot.SendMessage(callback.Message.Chat.ID, "⚡ Отправляю файлы из кэша...")
+						
+						for _, cachedVideo := range cachedFormats {
+							// Определяем тип файла по расширению
+							fileExt := strings.ToLower(filepath.Ext(cachedVideo.FilePath))
+							isAudio := fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".ogg"
+							
+							if isAudio {
+								// Отправляем аудио
+								if err := bot.SendAudio(callback.Message.Chat.ID, cachedVideo.FilePath, fmt.Sprintf("Аудио в формате %s (из кэша)", cachedVideo.FormatID)); err != nil {
+									log.Printf("❌ Ошибка отправки аудио из кэша: %v", err)
+								} else {
+									log.Printf("✅ Аудио отправлено из кэша: %s", cachedVideo.FormatID)
+								}
+							} else {
+								// Отправляем видео
+								if err := bot.SendVideo(callback.Message.Chat.ID, cachedVideo.FilePath, fmt.Sprintf("Видео в формате %s (из кэша)", cachedVideo.FormatID)); err != nil {
+									log.Printf("❌ Ошибка отправки видео из кэша: %v", err)
+								} else {
+									log.Printf("✅ Видео отправлено из кэша: %s", cachedVideo.FormatID)
+								}
+							}
+							
+							// Увеличиваем счетчик скачиваний
+							bot.cacheService.IncrementDownloadCount(videoID, platform, cachedVideo.FormatID)
+						}
+						
+						bot.SendMessage(callback.Message.Chat.ID, "✅ Все файлы отправлены из кэша!")
+						
 					} else if callback.Data == "instant_best" {
 						// Пользователь выбрал мгновенное скачивание
 						log.Printf("⚡ Пользователь выбрал мгновенное скачивание")
@@ -2660,6 +2777,17 @@ func extractVideoID(url string) string {
 }
 
 // fixUTF8Encoding исправляет UTF-8 кодировку строки
+// getPopularCachedVideos возвращает популярные видео из кэша
+func (b *LocalBot) getPopularCachedVideos(limit int) ([]services.VideoCache, error) {
+	return b.cacheService.GetPopularVideos(limit)
+}
+
+// isVideoInCache проверяет, есть ли видео в кэше
+func (b *LocalBot) isVideoInCache(videoID, platform string) (bool, []services.VideoCache, error) {
+	// Получаем все форматы для этого видео из кэша
+	return b.cacheService.GetVideoFormats(videoID, platform)
+}
+
 // convertWebmToMp3 конвертирует WebM аудио файл в MP3 используя ffmpeg
 func (b *LocalBot) convertWebmToMp3(webmPath string) (string, error) {
 	// Создаем путь для MP3 файла, убирая все расширения и добавляя .mp3

@@ -249,6 +249,88 @@ func (cs *CacheService) AddToCache(videoID, platform, url, title, formatID, reso
 	return nil
 }
 
+// GetVideoFormats возвращает все форматы видео из кэша
+func (cs *CacheService) GetVideoFormats(videoID, platform string) (bool, []VideoCache, error) {
+	cs.mutex.RLock()
+	defer cs.mutex.RUnlock()
+	
+	query := `SELECT id, video_id, platform, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at 
+			  FROM video_cache 
+			  WHERE video_id = ? AND platform = ? AND file_path IS NOT NULL AND file_path != ''`
+	
+	rows, err := cs.db.Query(query, videoID, platform)
+	if err != nil {
+		return false, nil, fmt.Errorf("ошибка получения форматов видео: %v", err)
+	}
+	defer rows.Close()
+	
+	var videos []VideoCache
+	for rows.Next() {
+		var video VideoCache
+		err := rows.Scan(
+			&video.ID, &video.VideoID, &video.Platform, &video.URL, &video.Title, &video.DownloadCount,
+			&video.LastDownload, &video.FileSize, &video.FilePath, &video.FormatID,
+			&video.Resolution, &video.CreatedAt,
+		)
+		if err != nil {
+			log.Printf("⚠️ Ошибка сканирования строки: %v", err)
+			continue
+		}
+		
+		// Проверяем, существует ли файл
+		if _, err := os.Stat(video.FilePath); os.IsNotExist(err) {
+			log.Printf("⚠️ Файл не существует, пропускаем: %s", video.FilePath)
+			continue
+		}
+		
+		videos = append(videos, video)
+	}
+	
+	return len(videos) > 0, videos, nil
+}
+
+// GetPopularVideos возвращает популярные видео из кэша
+func (cs *CacheService) GetPopularVideos(limit int) ([]VideoCache, error) {
+	cs.mutex.RLock()
+	defer cs.mutex.RUnlock()
+	
+	query := `SELECT id, video_id, platform, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at 
+			  FROM video_cache 
+			  WHERE file_path IS NOT NULL AND file_path != ''
+			  ORDER BY download_count DESC, last_download DESC 
+			  LIMIT ?`
+	
+	rows, err := cs.db.Query(query, limit)
+	if err != nil {
+		return nil, fmt.Errorf("ошибка получения популярных видео: %v", err)
+	}
+	defer rows.Close()
+	
+	var videos []VideoCache
+	for rows.Next() {
+		var video VideoCache
+		err := rows.Scan(
+			&video.ID, &video.VideoID, &video.Platform, &video.URL, &video.Title, &video.DownloadCount,
+			&video.LastDownload, &video.FileSize, &video.FilePath, &video.FormatID,
+			&video.Resolution, &video.CreatedAt,
+		)
+		if err != nil {
+			log.Printf("⚠️ Ошибка сканирования строки: %v", err)
+			continue
+		}
+		
+		// Проверяем, существует ли файл
+		if _, err := os.Stat(video.FilePath); os.IsNotExist(err) {
+			log.Printf("⚠️ Файл не существует, пропускаем: %s", video.FilePath)
+			continue
+		}
+		
+		videos = append(videos, video)
+	}
+	
+	return videos, nil
+}
+
 // IncrementDownloadCount увеличивает счетчик скачиваний
 func (cs *CacheService) IncrementDownloadCount(videoID, platform, formatID string) error {
 	cs.mutex.Lock()
@@ -265,37 +347,6 @@ func (cs *CacheService) IncrementDownloadCount(videoID, platform, formatID strin
 	return nil
 }
 
-// GetPopularVideos возвращает популярные видео (5+ скачиваний)
-func (cs *CacheService) GetPopularVideos() ([]VideoCache, error) {
-	cs.mutex.RLock()
-	defer cs.mutex.RUnlock()
-	
-	query := `SELECT id, video_id, platform, url, title, download_count, last_download, file_size, file_path, format_id, resolution, created_at 
-			  FROM video_cache WHERE download_count >= 5 ORDER BY download_count DESC, last_download DESC`
-	
-	rows, err := cs.db.Query(query)
-	if err != nil {
-		return nil, fmt.Errorf("ошибка получения популярных видео: %v", err)
-	}
-	defer rows.Close()
-
-	var videos []VideoCache
-	for rows.Next() {
-		var cache VideoCache
-		err := rows.Scan(
-			&cache.ID, &cache.VideoID, &cache.Platform, &cache.URL, &cache.Title, &cache.DownloadCount,
-			&cache.LastDownload, &cache.FileSize, &cache.FilePath, &cache.FormatID,
-			&cache.Resolution, &cache.CreatedAt,
-		)
-		if err != nil {
-			log.Printf("⚠️ Ошибка сканирования строки: %v", err)
-			continue
-		}
-		videos = append(videos, cache)
-	}
-
-	return videos, nil
-}
 
 // ensureCacheSize проверяет размер кэша и очищает старые файлы если нужно
 func (cs *CacheService) ensureCacheSize(newFileSize int64) error {
