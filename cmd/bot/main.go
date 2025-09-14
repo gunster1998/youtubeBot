@@ -2397,22 +2397,56 @@ func main() {
 									log.Printf("📥 Файл скачан: %s", videoPath)
 									bot.SendMessage(callback.Message.Chat.ID, "✅ Файл скачан! 📤 Отправляю в Telegram...")
 									
-									// Определяем тип файла по расширению
+									// Определяем тип файла по расширению и выбранному формату
 									fileExt := strings.ToLower(filepath.Ext(videoPath))
-									isAudio := fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".ogg"
 									
-									// Если файл в формате webm, конвертируем его в mp4
-									if fileExt == ".webm" {
-										log.Printf("🎬 Конвертирую WebM файл в MP4: %s", videoPath)
-										convertedPath, err := bot.convertWebmToMp4(videoPath)
-										if err != nil {
-											log.Printf("❌ Ошибка конвертации WebM: %v", err)
-											bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка конвертации видео файла")
-											return
+									// Проверяем, является ли выбранный формат аудио
+									var isAudioFormat bool
+									if cachedFormats, exists := bot.getFormatCache(callback.Message.Chat.ID); exists {
+										for _, format := range cachedFormats {
+											if format.ID == formatID {
+												// Формат считается аудио если:
+												// 1. В ID есть "audio", "drc", "bestaudio"
+												// 2. Или это только аудио формат (без видео)
+												isAudioFormat = strings.Contains(formatID, "audio") || 
+																strings.Contains(formatID, "drc") || 
+																strings.Contains(formatID, "bestaudio") ||
+																format.Extension == "audio"
+												break
+											}
 										}
-										videoPath = convertedPath
-										fileExt = ".mp4"
-										log.Printf("✅ WebM файл успешно конвертирован в MP4: %s", videoPath)
+									}
+									
+									// Определяем финальный тип файла
+									isAudio := isAudioFormat || fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".ogg"
+									
+									// Если файл в формате webm, конвертируем его
+									if fileExt == ".webm" {
+										if isAudio {
+											// Для аудио конвертируем WebM в MP3
+											log.Printf("🎵 Конвертирую WebM аудио в MP3: %s", videoPath)
+											convertedPath, err := bot.convertWebmToMp3(videoPath)
+											if err != nil {
+												log.Printf("❌ Ошибка конвертации WebM аудио: %v", err)
+												bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка конвертации аудио файла")
+												return
+											}
+											videoPath = convertedPath
+											fileExt = ".mp3"
+											log.Printf("✅ WebM аудио успешно конвертировано в MP3: %s", videoPath)
+										} else {
+											// Для видео конвертируем WebM в MP4
+											log.Printf("🎬 Конвертирую WebM видео в MP4: %s", videoPath)
+											convertedPath, err := bot.convertWebmToMp4(videoPath)
+											if err != nil {
+												log.Printf("❌ Ошибка конвертации WebM видео: %v", err)
+												bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка конвертации видео файла")
+												return
+											}
+											videoPath = convertedPath
+											fileExt = ".mp4"
+											log.Printf("✅ WebM видео успешно конвертировано в MP4: %s", videoPath)
+										}
 									}
 									
 									// Получаем метаданные для красивого caption
@@ -2614,6 +2648,39 @@ func extractVideoID(url string) string {
 }
 
 // fixUTF8Encoding исправляет UTF-8 кодировку строки
+// convertWebmToMp3 конвертирует WebM аудио файл в MP3 используя ffmpeg
+func (b *LocalBot) convertWebmToMp3(webmPath string) (string, error) {
+	// Создаем путь для MP3 файла
+	mp3Path := strings.TrimSuffix(webmPath, ".webm") + ".mp3"
+	
+	// Команда ffmpeg для конвертации аудио
+	cmd := exec.Command("ffmpeg", 
+		"-i", webmPath,
+		"-vn", // Без видео
+		"-acodec", "mp3",
+		"-ab", "192k", // Битрейт аудио
+		"-ar", "44100", // Частота дискретизации
+		"-y", // Перезаписывать файл если существует
+		mp3Path)
+	
+	log.Printf("🎵 Выполняю конвертацию аудио: %s", strings.Join(cmd.Args, " "))
+	
+	// Запускаем конвертацию
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		log.Printf("❌ Ошибка ffmpeg (аудио): %s", string(output))
+		return "", fmt.Errorf("ошибка конвертации WebM в MP3: %v", err)
+	}
+	
+	// Удаляем оригинальный WebM файл
+	if err := os.Remove(webmPath); err != nil {
+		log.Printf("⚠️ Не удалось удалить WebM файл %s: %v", webmPath, err)
+	}
+	
+	log.Printf("✅ Конвертация аудио завершена: %s -> %s", webmPath, mp3Path)
+	return mp3Path, nil
+}
+
 // convertWebmToMp4 конвертирует WebM файл в MP4 используя ffmpeg
 func (b *LocalBot) convertWebmToMp4(webmPath string) (string, error) {
 	// Создаем путь для MP4 файла
