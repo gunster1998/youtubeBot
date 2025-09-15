@@ -169,23 +169,22 @@ func (s *YouTubeService) GetVideoFormats(url string) ([]VideoFormat, error) {
 
 // parseVideoFormats парсит вывод yt-dlp и возвращает список форматов
 func (s *YouTubeService) parseVideoFormats(output string) ([]VideoFormat, error) {
-	log.Printf("📋 Парсинг вывода yt-dlp")
-	log.Printf("🔍 Сырой вывод yt-dlp:\n%s", output)
-
+	debugf("📋 Парсинг вывода yt-dlp")
+	debugf("🔍 Сырой вывод yt-dlp:\n%s", output)
 	// Парсим вывод yt-dlp
 	var allFormats []VideoFormat
 	lines := strings.Split(output, "\n")
-
-	log.Printf("📊 Всего строк в выводе: %d", len(lines))
+	debugf("📊 Всего строк в выводе: %d", len(lines))
 	
 	startParsing := false
 	headerFound := false
 
+	// compile once outside the loop
+	reDigits := regexp.MustCompile(`^\d+`)
 	for i, line := range lines {
 		line = strings.TrimSpace(line)
 		
-		log.Printf("🔍 Строка %d: '%s'", i+1, line)
-
+		debugf("🔍 Строка %d: '%s'", i+1, line)
 		// Пропускаем пустые строки
 		if line == "" {
 			continue
@@ -196,7 +195,7 @@ func (s *YouTubeService) parseVideoFormats(output string) ([]VideoFormat, error)
 		   strings.Contains(line, "ID EXT") || strings.Contains(line, "format code") {
 			startParsing = true
 			headerFound = true
-			log.Printf("✅ Найден заголовок таблицы: '%s'", line)
+			debugf("✅ Найден заголовок таблицы: '%s'", line)
 			continue
 		}
 
@@ -206,9 +205,9 @@ func (s *YouTubeService) parseVideoFormats(output string) ([]VideoFormat, error)
 		}
 
 			// Парсим строки с форматами (начинаются с ID)
-		if startParsing && regexp.MustCompile(`^\d+`).MatchString(line) {
+		if startParsing && reDigits.MatchString(line) {
 			parts := strings.Fields(line)
-			log.Printf("🔍 Парсинг строки: %s (частей: %d)", line, len(parts))
+			debugf("🔍 Парсинг строки: %s (частей: %d)", line, len(parts))
 			
 			// Пропускаем строки, которые не являются видео/аудио форматами
 			if len(parts) < 4 {
@@ -1209,4 +1208,13 @@ func getKeys(data map[string]interface{}) []string {
 		keys = append(keys, k)
 	}
 	return keys
+}
+
+// Debug logging toggle via LOG_LEVEL=debug
+var debugEnabled = strings.ToLower(os.Getenv("LOG_LEVEL")) == "debug"
+
+func debugf(format string, args ...interface{}) {
+	if debugEnabled {
+		log.Printf(format, args...)
+	}
 }

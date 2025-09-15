@@ -50,7 +50,7 @@ func (us *UniversalService) GetVideoFormats(url string) ([]VideoFormat, error) {
 	
 	// Выполняем команду yt-dlp
 	cmd := exec.Command(getYtDlpPath(), allArgs...)
-	log.Printf("🚀 Выполняю команду для %s: %s", platformInfo.DisplayName, strings.Join(cmd.Args, " "))
+	udebugf("🚀 Выполняю команду для %s: %s", platformInfo.DisplayName, strings.Join(cmd.Args, " "))
 	
 	output, err := cmd.CombinedOutput()
 	if err != nil {
@@ -64,7 +64,7 @@ func (us *UniversalService) GetVideoFormats(url string) ([]VideoFormat, error) {
 		return nil, fmt.Errorf("ошибка парсинга форматов для %s: %v", platformInfo.DisplayName, err)
 	}
 	
-	log.Printf("📊 Найдено %d форматов для %s", len(formats), platformInfo.DisplayName)
+	udebugf("📊 Найдено %d форматов для %s", len(formats), platformInfo.DisplayName)
 	return formats, nil
 }
 
@@ -139,7 +139,7 @@ func (us *UniversalService) DownloadVideoWithFormat(url, formatID string) (strin
 
 // parseVideoFormats парсит вывод yt-dlp для любой платформы
 func (us *UniversalService) parseVideoFormats(output string, platformType PlatformType) ([]VideoFormat, error) {
-	log.Printf("📋 Парсинг форматов для %s", platformType)
+	udebugf("📋 Парсинг форматов для %s", platformType)
 	
 	var allFormats []VideoFormat
 	lines := strings.Split(output, "\n")
@@ -305,4 +305,12 @@ func (us *UniversalService) IsValidURL(url string) bool {
 // GetPlatformInfo возвращает информацию о платформе по URL
 func (us *UniversalService) GetPlatformInfo(url string) *PlatformInfo {
 	return us.platformDetector.DetectPlatform(url)
+}
+
+// Debug logging toggle via LOG_LEVEL=debug
+var uniDebug = strings.ToLower(os.Getenv("LOG_LEVEL")) == "debug"
+func udebugf(format string, args ...interface{}) {
+    if uniDebug {
+        log.Printf(format, args...)
+    }
 }

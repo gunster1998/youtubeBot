@@ -2616,6 +2616,17 @@ func main() {
 										}
 									}
 									
+									// Для MP4 проверяем совместимость с macOS (H.264/AAC, yuv420p, faststart)
+									if !isAudio && fileExt == ".mp4" {
+										compatiblePath, err := bot.ensureMP4MacCompatible(videoPath)
+										if err != nil {
+											log.Printf("⚠️ Не удалось обеспечить совместимость MP4: %v", err)
+										} else if compatiblePath != videoPath {
+											log.Printf("✅ MP4 приведен к совместимому формату: %s", compatiblePath)
+											videoPath = compatiblePath
+										}
+									}
+									
 									// Получаем метаданные для красивого caption
 									var metadata *services.VideoMetadata
 									if platform == "youtube" || platform == "youtube_shorts" {
@@ -3129,7 +3140,10 @@ func (b *LocalBot) convertWebmToMp4(webmPath string) (string, error) {
 	cmd := exec.Command("ffmpeg", 
 		"-i", webmPath,
 		"-c:v", "libx264",
+		"-pix_fmt", "yuv420p",
+		"-movflags", "+faststart",
 		"-c:a", "aac",
+		"-b:a", "192k",
 		"-preset", "fast",
 		"-crf", "23",
 		"-y", // Перезаписывать файл если существует
@@ -3151,6 +3165,89 @@ func (b *LocalBot) convertWebmToMp4(webmPath string) (string, error) {
 	
 	log.Printf("✅ Конвертация завершена: %s -> %s", webmPath, mp4Path)
 	return mp4Path, nil
+}
+
+// getVideoStreamInfo возвращает codec и pix_fmt для первого видеопотока
+func (b *LocalBot) getVideoStreamInfo(videoPath string) (string, string, error) {
+    ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+    defer cancel()
+
+    cmdCodec := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "default=nw=1:nk=1", videoPath)
+    codecOut, err := cmdCodec.CombinedOutput()
+    if err != nil {
+        return "", "", fmt.Errorf("ffprobe codec error: %v (%s)", err, strings.TrimSpace(string(codecOut)))
+    }
+    codec := strings.TrimSpace(string(codecOut))
+
+    cmdPix := exec.CommandContext(ctx, "ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=pix_fmt", "-of", "default=nw=1:nk=1", videoPath)
+    pixOut, err := cmdPix.CombinedOutput()
+    if err != nil {
+        return codec, "", fmt.Errorf("ffprobe pix_fmt error: %v (%s)", err, strings.TrimSpace(string(pixOut)))
+    }
+    pix := strings.TrimSpace(string(pixOut))
+
+    return codec, pix, nil
+}
+
+// ensureMP4MacCompatible гарантирует H.264/AAC, yuv420p и faststart для MP4
+func (b *LocalBot) ensureMP4MacCompatible(mp4Path string) (string, error) {
+    codec, pix, err := b.getVideoStreamInfo(mp4Path)
+    if err != nil {
+        log.Printf("⚠️ Не удалось получить информацию о видео: %v", err)
+    }
+
+    needsTranscode := true
+    if strings.EqualFold(codec, "h264") && strings.EqualFold(pix, "yuv420p") {
+        needsTranscode = false
+    }
+
+    outPath := mp4Path
+    if needsTranscode {
+        tmpPath := strings.TrimSuffix(mp4Path, ".mp4") + "_h264.mp4"
+        cmd := exec.Command(
+            "ffmpeg",
+            "-i", mp4Path,
+            "-c:v", "libx264",
+            "-pix_fmt", "yuv420p",
+            "-movflags", "+faststart",
+            "-c:a", "aac",
+            "-b:a", "192k",
+            "-preset", "fast",
+            "-crf", "22",
+            "-y",
+            tmpPath,
+        )
+        log.Printf("🎞️ Транскодирую в H.264/AAC: %s", strings.Join(cmd.Args, " "))
+        if output, err := cmd.CombinedOutput(); err != nil {
+            log.Printf("❌ Ошибка транскодирования: %s", string(output))
+            return "", fmt.Errorf("ошибка транскодирования: %v", err)
+        }
+        if err := os.Remove(mp4Path); err != nil {
+            log.Printf("⚠️ Не удалось удалить исходный MP4: %v", err)
+        }
+        outPath = tmpPath
+    } else {
+        tmpPath := strings.TrimSuffix(mp4Path, ".mp4") + "_faststart.mp4"
+        cmd := exec.Command(
+            "ffmpeg",
+            "-i", mp4Path,
+            "-c", "copy",
+            "-movflags", "+faststart",
+            "-y",
+            tmpPath,
+        )
+        log.Printf("🚀 Применяю faststart без перекодирования: %s", strings.Join(cmd.Args, " "))
+        if output, err := cmd.CombinedOutput(); err != nil {
+            log.Printf("⚠️ Ошибка faststart: %s", string(output))
+        } else {
+            if err := os.Remove(mp4Path); err != nil {
+                log.Printf("⚠️ Не удалось удалить исходный MP4 после faststart: %v", err)
+            }
+            outPath = tmpPath
+        }
+    }
+
+    return outPath, nil
 }
 
 func fixUTF8Encoding(s string) string {
