@@ -873,6 +873,51 @@ func (b *AsyncLocalBot) SendVideoFormatsOnly(chatID int64, text string, formats 
 		})
 	}
 	
+	// Проверяем, есть ли видео в кэше для мгновенного скачивания
+	videoURL, exists := b.getVideoURLCache(chatID)
+	if exists && videoURL != "" {
+		// Извлекаем videoID из URL
+		videoID := b.extractVideoID(videoURL)
+		if videoID != "" {
+			// Получаем платформу из кэша
+			platform := "youtube" // По умолчанию YouTube
+			
+			// Проверяем, есть ли видео в кэше
+			if inCache, cachedFormats, err := b.isVideoInCache(videoID, platform); err == nil && inCache {
+				log.Printf("⚡ Видео найдено в кэше (%d форматов), добавляю кнопку мгновенного скачивания", len(cachedFormats))
+				
+				// Находим самый большой формат по размеру файла
+				var largestFormat *services.VideoCache
+				var maxSize int64 = 0
+				
+				for i := range cachedFormats {
+					size := b.parseFileSize(cachedFormats[i].FileSize)
+					if size > maxSize {
+						maxSize = size
+						largestFormat = &cachedFormats[i]
+					}
+				}
+				
+				// Формируем текст кнопки с размером и разрешением
+				buttonText := "⚡ Скачать мгновенно (из кэша)"
+				if largestFormat != nil {
+					buttonText = fmt.Sprintf("⚡ Скачать мгновенно (%s / %s)", 
+						largestFormat.Resolution, largestFormat.FileSize)
+				}
+				
+				// Добавляем кнопку "Скачать мгновенно" с информацией о формате
+				keyboard = append(keyboard, []map[string]interface{}{
+					{
+						"text":          buttonText,
+						"callback_data": "instant_cache",
+					},
+				})
+			} else {
+				log.Printf("🔍 Видео не найдено в кэше: videoID=%s, platform=%s, error=%v", videoID, platform, err)
+			}
+		}
+	}
+	
 	// Создаем сообщение с keyboard
 	message := map[string]interface{}{
 		"chat_id":      chatID,
@@ -1302,4 +1347,45 @@ func extractVideoID(url string) string {
 	}
 
 	return ""
+}
+
+// getVideoURLCache получает URL видео из кэша
+func (b *AsyncLocalBot) getVideoURLCache(chatID int64) (string, bool) {
+	b.videoURLCacheMux.RLock()
+	defer b.videoURLCacheMux.RUnlock()
+	url, exists := b.videoURLCache[chatID]
+	return url, exists
+}
+
+// extractVideoID извлекает ID видео из YouTube URL (метод для AsyncLocalBot)
+func (b *AsyncLocalBot) extractVideoID(url string) string {
+	return extractVideoID(url)
+}
+
+// parseFileSize парсит размер файла в байты (метод для AsyncLocalBot)
+func (b *AsyncLocalBot) parseFileSize(fileSize string) int64 {
+	return parseFileSize(fileSize)
+}
+
+// isVideoInCache проверяет, есть ли видео в кэше (метод для AsyncLocalBot)
+func (b *AsyncLocalBot) isVideoInCache(videoID, platform string) (bool, []services.VideoCache, error) {
+	// Получаем все форматы для этого видео из кэша
+	inCache, cachedFormats, err := b.cacheService.GetVideoFormats(videoID, platform)
+	if err != nil || !inCache {
+		return false, nil, err
+	}
+	
+	// Проверяем, какие файлы действительно существуют
+	var existingFormats []services.VideoCache
+	for _, format := range cachedFormats {
+		if _, err := os.Stat(format.FilePath); err == nil {
+			log.Printf("✅ Файл существует в кэше: %s", format.FilePath)
+			existingFormats = append(existingFormats, format)
+		} else {
+			log.Printf("⚠️ Файл в кэше но не существует: %s", format.FilePath)
+		}
+	}
+	
+	// Возвращаем true только если есть хотя бы один существующий файл
+	return len(existingFormats) > 0, existingFormats, nil
 }

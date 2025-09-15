@@ -1218,10 +1218,29 @@ func (b *LocalBot) SendVideoFormatsOnly(chatID int64, text string, formats []ser
 			if inCache, cachedFormats, err := b.isVideoInCache(videoID, platform); err == nil && inCache {
 				log.Printf("⚡ Видео найдено в кэше (%d форматов), добавляю кнопку мгновенного скачивания", len(cachedFormats))
 				
-				// Добавляем кнопку "Скачать мгновенно"
+				// Находим самый большой формат по размеру файла
+				var largestFormat *services.VideoCache
+				var maxSize int64 = 0
+				
+				for i := range cachedFormats {
+					size := cachedFormats[i].FileSize
+					if size > maxSize {
+						maxSize = size
+						largestFormat = &cachedFormats[i]
+					}
+				}
+				
+				// Формируем текст кнопки с размером и разрешением
+				buttonText := "⚡ Скачать мгновенно (из кэша)"
+				if largestFormat != nil {
+					buttonText = fmt.Sprintf("⚡ Скачать мгновенно (%s / %s)", 
+						largestFormat.Resolution, formatFileSize(largestFormat.FileSize))
+				}
+				
+				// Добавляем кнопку "Скачать мгновенно" с информацией о формате
 				keyboard = append(keyboard, []map[string]interface{}{
 					{
-						"text":          "⚡ Скачать мгновенно (из кэша)",
+						"text":          buttonText,
 						"callback_data": "instant_cache",
 					},
 				})
@@ -1321,10 +1340,29 @@ func (b *LocalBot) SendAllFormats(chatID int64, text string, formats []services.
 			if inCache, cachedFormats, err := b.isVideoInCache(videoID, platform); err == nil && inCache {
 				log.Printf("⚡ Видео найдено в кэше (%d форматов), добавляю кнопку мгновенного скачивания", len(cachedFormats))
 				
-				// Добавляем кнопку "Скачать мгновенно"
+				// Находим самый большой формат по размеру файла
+				var largestFormat *services.VideoCache
+				var maxSize int64 = 0
+				
+				for i := range cachedFormats {
+					size := cachedFormats[i].FileSize
+					if size > maxSize {
+						maxSize = size
+						largestFormat = &cachedFormats[i]
+					}
+				}
+				
+				// Формируем текст кнопки с размером и разрешением
+				buttonText := "⚡ Скачать мгновенно (из кэша)"
+				if largestFormat != nil {
+					buttonText = fmt.Sprintf("⚡ Скачать мгновенно (%s / %s)", 
+						largestFormat.Resolution, formatFileSize(largestFormat.FileSize))
+				}
+				
+				// Добавляем кнопку "Скачать мгновенно" с информацией о формате
 				keyboard = append(keyboard, []map[string]interface{}{
 					{
-						"text":          "⚡ Скачать мгновенно (из кэша)",
+						"text":          buttonText,
 						"callback_data": "instant_cache",
 					},
 				})
@@ -1417,10 +1455,29 @@ func (b *LocalBot) SendAudioFormatsOnly(chatID int64, text string, formats []ser
 			if inCache, cachedFormats, err := b.isVideoInCache(videoID, platform); err == nil && inCache {
 				log.Printf("⚡ Видео найдено в кэше (%d форматов), добавляю кнопку мгновенного скачивания", len(cachedFormats))
 				
-				// Добавляем кнопку "Скачать мгновенно"
+				// Находим самый большой формат по размеру файла
+				var largestFormat *services.VideoCache
+				var maxSize int64 = 0
+				
+				for i := range cachedFormats {
+					size := cachedFormats[i].FileSize
+					if size > maxSize {
+						maxSize = size
+						largestFormat = &cachedFormats[i]
+					}
+				}
+				
+				// Формируем текст кнопки с размером и разрешением
+				buttonText := "⚡ Скачать мгновенно (из кэша)"
+				if largestFormat != nil {
+					buttonText = fmt.Sprintf("⚡ Скачать мгновенно (%s / %s)", 
+						largestFormat.Resolution, formatFileSize(largestFormat.FileSize))
+				}
+				
+				// Добавляем кнопку "Скачать мгновенно" с информацией о формате
 				keyboard = append(keyboard, []map[string]interface{}{
 					{
-						"text":          "⚡ Скачать мгновенно (из кэша)",
+						"text":          buttonText,
 						"callback_data": "instant_cache",
 					},
 				})
@@ -2706,10 +2763,11 @@ func main() {
 							return
 						}
 						
-						// Отправляем все доступные форматы из кэша
-						bot.SendMessage(callback.Message.Chat.ID, "⚡ Отправляю файлы из кэша...")
-						
-						for _, cachedVideo := range cachedFormats {
+						// Если только один формат - отправляем сразу
+						if len(cachedFormats) == 1 {
+							cachedVideo := cachedFormats[0]
+							bot.SendMessage(callback.Message.Chat.ID, "⚡ Отправляю файл из кэша...")
+							
 							// Определяем тип файла по расширению
 							fileExt := strings.ToLower(filepath.Ext(cachedVideo.FilePath))
 							isAudio := fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".ogg"
@@ -2732,9 +2790,159 @@ func main() {
 							
 							// Увеличиваем счетчик скачиваний
 							bot.cacheService.IncrementDownloadCount(videoID, platform, cachedVideo.FormatID)
+							bot.SendMessage(callback.Message.Chat.ID, "✅ Файл отправлен из кэша!")
+						} else {
+							// Несколько форматов - показываем меню выбора
+							log.Printf("📋 Найдено %d форматов в кэше, показываю меню выбора", len(cachedFormats))
+							
+							// Сортируем форматы по размеру (от большего к меньшему)
+							sort.Slice(cachedFormats, func(i, j int) bool {
+								return cachedFormats[i].FileSize > cachedFormats[j].FileSize
+							})
+							
+							// Создаем меню выбора форматов из кэша
+							var keyboard [][]map[string]interface{}
+							
+							for _, cachedVideo := range cachedFormats {
+								// Определяем иконку по типу файла
+								fileExt := strings.ToLower(filepath.Ext(cachedVideo.FilePath))
+								isAudio := fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".ogg"
+								
+								icon := "🎥"
+								if isAudio {
+									icon = "🎵"
+								}
+								
+								buttonText := fmt.Sprintf("%s %s / %s", icon, cachedVideo.Resolution, formatFileSize(cachedVideo.FileSize))
+								callbackData := fmt.Sprintf("cached_format_%s_%s", cachedVideo.FormatID, cachedVideo.Resolution)
+								
+								keyboard = append(keyboard, []map[string]interface{}{
+									{
+										"text":          buttonText,
+										"callback_data": callbackData,
+									},
+								})
+							}
+							
+							// Отправляем меню выбора форматов из кэша
+							message := map[string]interface{}{
+								"chat_id":      callback.Message.Chat.ID,
+								"text":         "⚡ Доступные форматы из кэша:",
+								"reply_markup": map[string]interface{}{"inline_keyboard": keyboard},
+							}
+							
+							jsonData, err := json.Marshal(message)
+							if err != nil {
+								log.Printf("❌ Ошибка маршалинга keyboard: %v", err)
+								bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка создания меню выбора.")
+								return
+							}
+							
+							resp, err := bot.LocalClient.Post(
+								fmt.Sprintf("%s/bot%s/sendMessage", bot.APIURL, bot.Token),
+								"application/json",
+								bytes.NewBuffer(jsonData),
+							)
+							if err != nil {
+								log.Printf("❌ Ошибка отправки keyboard: %v", err)
+								bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка отправки меню выбора.")
+								return
+							}
+							defer resp.Body.Close()
+							
+							if resp.StatusCode != http.StatusOK {
+								bodyBytes, _ := io.ReadAll(resp.Body)
+								log.Printf("❌ Неуспешный статус отправки keyboard: %d, ответ: %s", resp.StatusCode, string(bodyBytes))
+								bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка отправки меню выбора.")
+								return
+							}
+							
+							log.Printf("✅ Меню выбора форматов из кэша отправлено успешно")
 						}
 						
-						bot.SendMessage(callback.Message.Chat.ID, "✅ Все файлы отправлены из кэша!")
+					} else if strings.HasPrefix(callback.Data, "cached_format_") {
+						// Пользователь выбрал формат из кэша
+						parts := strings.Split(callback.Data, "_")
+						if len(parts) >= 3 {
+							formatID := parts[2]
+							resolution := parts[3]
+							log.Printf("⚡ Пользователь выбрал формат из кэша: %s (%s)", formatID, resolution)
+							bot.AnswerCallbackQuery(callback.ID)
+							
+							// Получаем URL видео из кэша
+							videoURL, exists := bot.getVideoURLCache(callback.Message.Chat.ID)
+							if !exists || videoURL == "" {
+								log.Printf("❌ URL видео не найден в кэше для чата %d", callback.Message.Chat.ID)
+								bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка: URL видео не найден. Отправьте ссылку заново.")
+								return
+							}
+							
+							// Извлекаем videoID из URL
+							videoID := extractVideoID(videoURL)
+							if videoID == "" {
+								log.Printf("❌ Не удалось извлечь videoID из URL: %s", videoURL)
+								bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка: не удалось извлечь ID видео.")
+								return
+							}
+							
+							// Получаем платформу из кэша
+							platform := bot.platformCache[callback.Message.Chat.ID]
+							if platform == "" {
+								platform = "youtube" // По умолчанию YouTube
+							}
+							
+							// Находим нужный формат в кэше
+							inCache, cachedFormats, err := bot.isVideoInCache(videoID, platform)
+							if err != nil || !inCache {
+								log.Printf("❌ Ошибка получения кэша: %v", err)
+								bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка получения кэша.")
+								return
+							}
+							
+							var selectedFormat *services.VideoCache
+							for _, cachedVideo := range cachedFormats {
+								if cachedVideo.FormatID == formatID && cachedVideo.Resolution == resolution {
+									selectedFormat = &cachedVideo
+									break
+								}
+							}
+							
+							if selectedFormat == nil {
+								log.Printf("❌ Формат не найден в кэше: %s (%s)", formatID, resolution)
+								bot.SendMessage(callback.Message.Chat.ID, "❌ Формат не найден в кэше.")
+								return
+							}
+							
+							// Отправляем файл из кэша
+							bot.SendMessage(callback.Message.Chat.ID, "⚡ Отправляю файл из кэша...")
+							
+							// Определяем тип файла по расширению
+							fileExt := strings.ToLower(filepath.Ext(selectedFormat.FilePath))
+							isAudio := fileExt == ".mp3" || fileExt == ".m4a" || fileExt == ".ogg"
+							
+							if isAudio {
+								// Отправляем аудио
+								if err := bot.SendAudio(callback.Message.Chat.ID, selectedFormat.FilePath, fmt.Sprintf("Аудио в формате %s (из кэша)", selectedFormat.FormatID)); err != nil {
+									log.Printf("❌ Ошибка отправки аудио из кэша: %v", err)
+									bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка отправки аудио.")
+								} else {
+									log.Printf("✅ Аудио отправлено из кэша: %s", selectedFormat.FormatID)
+									bot.SendMessage(callback.Message.Chat.ID, "✅ Аудио отправлено из кэша!")
+								}
+							} else {
+								// Отправляем видео
+								if err := bot.SendVideo(callback.Message.Chat.ID, selectedFormat.FilePath, fmt.Sprintf("Видео в формате %s (из кэша)", selectedFormat.FormatID)); err != nil {
+									log.Printf("❌ Ошибка отправки видео из кэша: %v", err)
+									bot.SendMessage(callback.Message.Chat.ID, "❌ Ошибка отправки видео.")
+								} else {
+									log.Printf("✅ Видео отправлено из кэша: %s", selectedFormat.FormatID)
+									bot.SendMessage(callback.Message.Chat.ID, "✅ Видео отправлено из кэша!")
+								}
+							}
+							
+							// Увеличиваем счетчик скачиваний
+							bot.cacheService.IncrementDownloadCount(videoID, platform, selectedFormat.FormatID)
+						}
 						
 					} else if callback.Data == "instant_best" {
 						// Пользователь выбрал мгновенное скачивание
@@ -2799,6 +3007,28 @@ func parseFileSize(fileSize string) int64 {
 	}
 	
 	return 0
+}
+
+// formatFileSize форматирует размер файла в человеко-читаемый вид
+func formatFileSize(size int64) string {
+    if size <= 0 {
+        return "~?"
+    }
+    const (
+        KB = 1024
+        MB = 1024 * KB
+        GB = 1024 * MB
+    )
+    switch {
+    case size >= GB:
+        return fmt.Sprintf("%.2fGiB", float64(size)/float64(GB))
+    case size >= MB:
+        return fmt.Sprintf("%.2fMiB", float64(size)/float64(MB))
+    case size >= KB:
+        return fmt.Sprintf("%.2fKiB", float64(size)/float64(KB))
+    default:
+        return fmt.Sprintf("%dB", size)
+    }
 }
 
 // sortVideoFormatsByResolution сортирует видео форматы по разрешению
